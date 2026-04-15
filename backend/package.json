@@ -7,14 +7,21 @@
     "start": "node src/server.js"
   },
   "keywords": [],
+  "type": "module",
   "author": "",
   "license": "ISC",
   "description": "",
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  },
   "dependencies": {
+    "@clerk/express": "^2.0.5",
+    "@prisma/client": "^6.19.2",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "pg": "^8.20.0",
+    "prisma": "^6.19.2",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
