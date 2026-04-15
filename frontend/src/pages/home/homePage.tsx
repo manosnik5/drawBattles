@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useCreateRoom } from '../../hooks/useRoom'
 import Navbar from './components/Navbar'
@@ -6,10 +6,12 @@ import { pickRandomThemes } from '../../utils/themeSelector'
 import { generateRoomCode } from '../../utils/generateCode'
 import { Clipboard, RefreshCw } from 'lucide-react'
 import FriendsSection from './components/FriendsSection'
+import { useAuth } from '@clerk/clerk-react'
 
 
 const HomePage = () => {
   const navigate = useNavigate()
+  const { userId } = useAuth()
   const [tab, setTab] = useState<'create' | 'join'>('create')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [joinCode, setJoinCode] = useState('')
@@ -32,7 +34,7 @@ const HomePage = () => {
   }, [roomCode])
 
   const handleCreateRoom = useCallback(() => {
-   
+   if (!userId) return 
     createRoom.mutate(
       { code: roomCode },
       {
@@ -49,9 +51,10 @@ const HomePage = () => {
         }
       }
     )
-  }, [roomCode, theme, createRoom, navigate])
+  }, [roomCode, theme, createRoom, navigate, userId])
 
   const handleJoinRoom = () => {
+    if (!userId) return
     if (!joinCode.trim()) { setJoinError('Enter a room code'); return }
     if (joinCode.length !== 6) { setJoinError('Room code must be 6 characters'); return }
     setJoinError('')
@@ -116,7 +119,8 @@ const HomePage = () => {
 
                       <button
                         onClick={handleCreateRoom}
-                        disabled={createRoom.isPending}
+                        disabled={createRoom.isPending || !userId}
+                        title={!userId ? 'Sign in to create a room' : undefined}
                         className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl transition-all text-sm shadow-lg shadow-indigo-900/50 active:scale-[0.98]"
                       >
                         {createRoom.isPending ? (
@@ -153,7 +157,8 @@ const HomePage = () => {
                       </div>
                       <button
                         onClick={handleJoinRoom}
-                        disabled={!joinCode.trim()}
+                        disabled={!joinCode.trim() || !userId}
+                        title={!userId ? 'Sign in to join a room' : undefined}
                         className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold py-3 rounded-xl transition-all text-sm shadow-lg shadow-indigo-900/50 active:scale-[0.98]"
                       >
                         Join Room
