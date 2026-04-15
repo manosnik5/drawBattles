@@ -71,7 +71,7 @@ const LobbyPhase = ({ roomCode, room, connectedPlayers, isHost }: Props) => {
                 className="flex items-center gap-3 px-4 py-3 rounded-xl bg-slate-900/60 border border-white/10"
               >
 
-                <div className="flex-shrink-0">
+                <div className="shrink-0">
                   {player.imageUrl ? (
                     <img
                       src={player.imageUrl}
@@ -105,7 +105,7 @@ const LobbyPhase = ({ roomCode, room, connectedPlayers, isHost }: Props) => {
               key={`empty-${i}`}
               className="flex items-center gap-3 px-4 py-3 rounded-xl border border-dashed border-white/10"
             >
-              <div className="w-8 h-8 rounded-full bg-slate-800/60 flex-shrink-0" />
+              <div className="w-8 h-8 rounded-full bg-slate-800/60 shrink-0" />
               <span className="text-sm text-slate-600">Waiting for player...</span>
             </div>
           ))}
