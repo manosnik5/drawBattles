@@ -1,42 +1,43 @@
-import { useAuth } from "@clerk/clerk-react"
-import { useState, useEffect } from "react"
-import { axiosInstance } from "../lib/axios"
-import { Loader } from "lucide-react"
+import { useAuth0 } from "@auth0/auth0-react";
+import { useEffect, useState } from "react";
+import { axiosInstance } from "../lib/axios";
+import { Loader } from "lucide-react";
 
 const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-    const { getToken, isLoaded } = useAuth()
-    const [loading, setLoading] = useState(true)
+    const { getAccessTokenSilently, isAuthenticated, isLoading } = useAuth0();
+    const [ready, setReady] = useState(false);
 
     useEffect(() => {
-        if (!isLoaded) return
+        if (isLoading) return;
 
        const interceptor = axiosInstance.interceptors.request.use(async (config) => {
-    try {
-        const token = await getToken()
-
-        if (token) {
-            config.headers.Authorization = `Bearer ${token}`
+    if (isAuthenticated) {
+        try {
+            const token = await getAccessTokenSilently();
+            if (token) {
+                config.headers.Authorization = `Bearer ${token}`;
+            }
+        } catch (error) {
+            console.error("Failed to get token:", error);
         }
-    } catch (error) {
-        console.error("Failed to get token:", error)
     }
-    return config
-})
+    return config;
+});
 
-        setLoading(false)
+        setReady(true);
 
-        return () => axiosInstance.interceptors.request.eject(interceptor)
-    }, [isLoaded, getToken])
+        return () => axiosInstance.interceptors.request.eject(interceptor);
+    }, [isLoading, isAuthenticated, getAccessTokenSilently]);
 
-    if (loading || !isLoaded) {
+    if (!ready || isLoading) {
         return (
-            <div className="h-screen w-full bg-gradient-to-b from-slate-950 via-indigo-950 to-slate-900 flex items-center justify-center">
-                <Loader className="size-8 text-indigo-300/80 animate-spin" />
+            <div className="h-screen w-full flex items-center justify-center">
+                <Loader className="size-8 animate-spin" />
             </div>
-        )
+        );
     }
 
-    return <>{children}</>
-}
+    return <>{children}</>;
+};
 
-export default AuthProvider
+export default AuthProvider;
