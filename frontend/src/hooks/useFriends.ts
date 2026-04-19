@@ -1,5 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { friendApi } from '../api/friend'
+import type { Player } from '../types'
+import { useAuth0 } from "@auth0/auth0-react";
 
 export const friendKeys = {
     all: ['friends'] as const,
@@ -8,15 +10,16 @@ export const friendKeys = {
     pending: () => [...friendKeys.all, 'pending'] as const,
 }
 
-export const useGetFriends = () => {
-    return useQuery({
-        queryKey: friendKeys.list(),
-        queryFn: friendApi.getFriends,
-    })
+export const useGetFriends = (enabled = true) => {
+  return useQuery({
+    queryKey: friendKeys.list(),
+    queryFn: friendApi.getFriends,
+    enabled,
+  })
 }
 
 export const useSearchPlayers = (query: string) => {
-    return useQuery({
+    return useQuery<Player[]>({
         queryKey: friendKeys.search(query),
         queryFn: () => friendApi.searchPlayers(query),
         enabled: query.trim().length >= 2,
@@ -27,6 +30,7 @@ export const useGetPendingRequests = () => {
     return useQuery({
         queryKey: friendKeys.pending(),
         queryFn: friendApi.getPendingRequests,
+        initialData: [], 
     })
 }
 
