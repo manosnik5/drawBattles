@@ -2,8 +2,6 @@ import { axiosInstance } from '../lib/axios'
 import type { Player } from '../types'
 import type{ FriendRequest } from '../types'
 
-
-
 export const friendApi = {
     getFriends: async (): Promise<Player[]> => {
         const response = await axiosInstance.get('/friends')
@@ -11,13 +9,16 @@ export const friendApi = {
     },
     
     searchPlayers: async (query: string): Promise<Player[]> => {
-        const response = await axiosInstance.get('/friends/search', { params: { query } })
-        return response.data
+        const response = await axiosInstance.get('/friends/search', {
+            params: { query }
+        })
+
+        return response.data.users
     },
 
     getPendingRequests: async (): Promise<FriendRequest[]> => {
         const response = await axiosInstance.get('/friends/requests/pending')
-        return response.data.requests
+        return response.data?.requests ?? []
     },
 
     sendFriendRequest: async (receiverId: string): Promise<FriendRequest> => {
