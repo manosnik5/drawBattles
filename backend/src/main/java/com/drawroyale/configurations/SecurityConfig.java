@@ -37,24 +37,28 @@ public class SecurityConfig {
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
 
-            
-                .requestMatchers(
-                    "/",
-                    "/index.html",
-                    "/assets/**",
-                    "/*.js",
-                    "/*.css",
-                    "/*.ico"
-                ).permitAll()
+    // ✅ PUBLIC FRONTEND (React)
+    .requestMatchers(
+        "/",
+        "/auth-callback",
+        "/index.html",
+        "/favicon.ico",
+        "/assets/**",
+        "/*.js",
+        "/*.css"
+    ).permitAll()
 
-           
-                .requestMatchers("/api/auth/callback").permitAll()
-                .requestMatchers("/api/rooms/*/player-count").permitAll()
-                .requestMatchers("/api/rooms/*").permitAll()
+    // ✅ PUBLIC API
+    .requestMatchers("/api/auth/callback").permitAll()
+    .requestMatchers("/api/rooms/*/player-count").permitAll()
+    .requestMatchers("/api/rooms/*").permitAll()
 
-                // 🔒 EVERYTHING ELSE SECURED
-                .anyRequest().authenticated()
-            )
+    // 🔒 PROTECTED API
+    .requestMatchers("/api/**").authenticated()
+
+    // 🔒 EVERYTHING ELSE
+    .anyRequest().authenticated()
+)
             .oauth2ResourceServer(oauth2 -> oauth2
                 .jwt(jwt -> jwt.decoder(jwtDecoder()))
                 .authenticationEntryPoint((request, response, authException) -> {
