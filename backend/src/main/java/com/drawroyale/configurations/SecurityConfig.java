@@ -11,6 +11,8 @@ import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.jwt.*;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.oauth2.core.OAuth2Error;
+import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
 
 import java.util.List;
 
@@ -34,19 +36,36 @@ public class SecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-            .requestMatchers("/api/auth/callback").permitAll()
-            .requestMatchers("/api/rooms/*/player-count").permitAll()
-            .requestMatchers("GET", "/api/rooms/*").permitAll()
-            .anyRequest().authenticated()
-        )
-    .oauth2ResourceServer(oauth2 -> oauth2
-    .jwt(jwt -> jwt.decoder(jwtDecoder()))
-    .authenticationEntryPoint((request, response, authException) -> {
-        System.out.println("AUTH FAILED: " + authException.getMessage());
-        response.setStatus(401);
-        response.getWriter().write("{\"error\": \"" + authException.getMessage() + "\"}");
-    })
-);
+
+            
+                .requestMatchers(
+                    "/",
+                    "/index.html",
+                    "/assets/**",
+                    "/*.js",
+                    "/*.css",
+                    "/*.ico"
+                ).permitAll()
+
+           
+                .requestMatchers("/api/auth/callback").permitAll()
+                .requestMatchers("/api/rooms/*/player-count").permitAll()
+                .requestMatchers("/api/rooms/*").permitAll()
+
+                // 🔒 EVERYTHING ELSE SECURED
+                .anyRequest().authenticated()
+            )
+            .oauth2ResourceServer(oauth2 -> oauth2
+                .jwt(jwt -> jwt.decoder(jwtDecoder()))
+                .authenticationEntryPoint((request, response, authException) -> {
+                    System.out.println("AUTH FAILED: " + authException.getMessage());
+                    response.setStatus(401);
+                    response.setContentType("application/json");
+                    response.getWriter().write(
+                        "{\"error\": \"" + authException.getMessage() + "\"}"
+                    );
+                })
+            );
 
         return http.build();
     }
@@ -58,15 +77,18 @@ public class SecurityConfig {
         OAuth2TokenValidator<Jwt> audienceValidator = token -> {
             List<String> audiences = token.getAudience();
             if (audiences != null && audiences.contains(audience)) {
-                return org.springframework.security.oauth2.core.OAuth2TokenValidatorResult.success();
+                return OAuth2TokenValidatorResult.success();
             }
-            return org.springframework.security.oauth2.core.OAuth2TokenValidatorResult.failure(
-                new org.springframework.security.oauth2.core.OAuth2Error("invalid_token", "Invalid audience", null)
+            return OAuth2TokenValidatorResult.failure(
+                new OAuth2Error("invalid_token", "Invalid audience", null)
             );
         };
 
-        OAuth2TokenValidator<Jwt> withIssuer   = JwtValidators.createDefaultWithIssuer(issuer);
-        OAuth2TokenValidator<Jwt> withAudience = new DelegatingOAuth2TokenValidator<>(withIssuer, audienceValidator);
+        OAuth2TokenValidator<Jwt> withIssuer =
+            JwtValidators.createDefaultWithIssuer(issuer);
+
+        OAuth2TokenValidator<Jwt> withAudience =
+            new DelegatingOAuth2TokenValidator<>(withIssuer, audienceValidator);
 
         decoder.setJwtValidator(withAudience);
         return decoder;
