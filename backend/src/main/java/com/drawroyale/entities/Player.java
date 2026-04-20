@@ -32,7 +32,7 @@ public class Player {
     private LocalDateTime updatedAt;
 
     @OneToMany(mappedBy = "player")
-    @JsonIgnoreProperties("player")
+    @JsonIgnore
     private List<Drawing> drawings;
 
     @JsonIgnore

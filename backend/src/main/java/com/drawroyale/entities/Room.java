@@ -4,6 +4,8 @@ import jakarta.persistence.*;
 import lombok.*;
 import java.time.LocalDateTime;
 import java.util.List;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 @Entity
@@ -42,8 +44,8 @@ public class Room {
     @Column(nullable = false)
     private LocalDateTime updatedAt;
 
-    @OneToMany(mappedBy = "room", cascade = CascadeType.ALL)
-    @JsonIgnoreProperties("room")   // 👈 breaks the cycle
+    @OneToMany(mappedBy = "room")
+    @JsonIgnore
     private List<RoomPlayer> roomPlayers;
 
     @OneToMany(mappedBy = "room", cascade = CascadeType.ALL)
