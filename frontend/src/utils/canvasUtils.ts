@@ -124,7 +124,7 @@ export function renderStrokes(canvas: HTMLCanvasElement, actions: any[]) {
       size: Number(action.size) || 8,
       thinning: 0.5,
       smoothing: 0.5,
-      simulatePressure: false, // we have real pressure data
+      simulatePressure: false, 
     })
 
     if (!outline.length) continue
