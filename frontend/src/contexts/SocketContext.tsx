@@ -4,18 +4,19 @@ import {
     useEffect,
     useState,
     useCallback,
+    useRef,
     useMemo
 } from 'react'
 import type { ReactNode } from 'react'
-import { useAuth0 } from "@auth0/auth0-react"
-import { io, Socket } from 'socket.io-client'
+import { useAuth0 } from '@auth0/auth0-react'
+import { Client } from '@stomp/stompjs'
+import SockJS from 'sockjs-client'
 
 export type Phase = 'lobby' | 'theme_vote' | 'drawing' | 'voting' | 'results'
 
 export interface ConnectedPlayer {
     userId: string
     playerName: string
-    avatarColor: string
     imageUrl?: string
 }
 
@@ -26,12 +27,6 @@ export interface VotingDrawing {
     strokes: any[]
     current: number
     total: number
-}
-
-export interface VotingUpdate {
-    drawingId: string
-    reactions: Record<string, number>
-    totalVotes: number
 }
 
 export interface VotingResult {
@@ -86,15 +81,14 @@ interface Invite {
 }
 
 interface SocketContextValue {
-    socket: Socket | null
+    stompClient: Client | null
     isConnected: boolean
     onlineUsers: Set<string>
     isOnline: (userId: string) => boolean
     roomState: RoomState
     currentRoomCode: string | null
     pendingInvites: Invite[]
-
-    joinRoom: (roomCode: string, playerName: string, avatarColor: string) => void
+    joinRoom: (roomCode: string, playerName: string) => void
     leaveRoom: (roomCode: string) => void
     startGame: (roomCode: string) => void
     submitThemeOptions: (roomCode: string, themes: string[]) => void
@@ -107,7 +101,7 @@ interface SocketContextValue {
 }
 
 const SocketContext = createContext<SocketContextValue>({
-    socket: null,
+    stompClient: null,
     isConnected: false,
     onlineUsers: new Set(),
     isOnline: () => false,
@@ -130,204 +124,273 @@ export const useSocketContext = () => useContext(SocketContext)
 
 export const SocketProvider = ({ children }: { children: ReactNode }) => {
     const { user, isAuthenticated, isLoading, getAccessTokenSilently } = useAuth0()
-
     const userId = user?.sub ?? null
 
-    const [socket, setSocket] = useState<Socket | null>(null)
+    const [stompClient, setStompClient] = useState<Client | null>(null)
     const [isConnected, setIsConnected] = useState(false)
     const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set())
     const [roomState, setRoomState] = useState<RoomState>(defaultRoomState)
     const [currentRoomCode, setCurrentRoomCode] = useState<string | null>(null)
     const [pendingInvites, setPendingInvites] = useState<Invite[]>([])
 
+    // Keep current roomCode accessible inside stomp callbacks
+    const currentRoomCodeRef = useRef<string | null>(null)
+    currentRoomCodeRef.current = currentRoomCode
+
     const updateRoomState = useCallback((partial: Partial<RoomState>) => {
         setRoomState(prev => ({ ...prev, ...partial }))
     }, [])
 
-    useEffect(() => {
-        if (isLoading || !isAuthenticated || !userId) return
-
-        let s: Socket
-
-        const connectSocket = async () => {
-     
-            s = io(import.meta.env.VITE_SOCKET_URL, {
-                query: {
-                    userId,   
-                },
-                withCredentials: true,
-                transports: ['websocket', 'polling'],
-            })
-
-            setSocket(s)
-
-            s.on('connect', () => {
-                setIsConnected(true)
-                s.emit('presence:get_online_users')
-            })
-
-            s.on('disconnect', () => {
-                setIsConnected(false)
-            })
-
-            s.on('connect_error', (err) => {
-                console.error('socket error:', err.message)
-                setIsConnected(false)
-            })
-
-            s.on('presence:online_users', (users: string[]) => {
-                setOnlineUsers(new Set(users))
-            })
-
-            s.on('presence:update', ({ userId: uid, online }) => {
-                setOnlineUsers(prev => {
-                    const next = new Set(prev)
-                    online ? next.add(uid) : next.delete(uid)
-                    return next
-                })
-            })
-
-            s.on('room:state', ({ phase, connectedPlayers }) => {
-                updateRoomState({ phase, connectedPlayers })
-            })
-
-            s.on('room:playerJoined', ({ connectedPlayers }) => {
-                updateRoomState({ connectedPlayers })
-            })
-
-            s.on('room:playerLeft', ({ connectedPlayers }) => {
-                updateRoomState({ connectedPlayers })
-            })
-
-            s.on('room:invite', (invite) => {
-                setPendingInvites(prev => [
-                    ...prev,
-                    { id: crypto.randomUUID(), ...invite }
-                ])
-            })
-
-            s.on('phase:changed', ({ phase }) => {
+    const subscribeToRoom = useCallback((client: Client, roomCode: string) => {
+        const subs = [
+            client.subscribe(`/topic/room/${roomCode}/room/playerJoined`, msg => {
+                const d = JSON.parse(msg.body)
+                updateRoomState({ connectedPlayers: d.connectedPlayers })
+            }),
+            client.subscribe(`/topic/room/${roomCode}/room/playerLeft`, msg => {
+                const d = JSON.parse(msg.body)
+                updateRoomState({ connectedPlayers: d.connectedPlayers })
+            }),
+            client.subscribe(`/topic/room/${roomCode}/phase/changed`, msg => {
+                const d = JSON.parse(msg.body)
                 updateRoomState({
-                    phase,
+                    phase: d.phase,
                     votingDrawing: null,
                     votingResult: null,
                     votingVotes: {},
                     votingTimeLeft: 10,
                 })
-            })
-
-            s.on('theme:options', ({ themes }) => {
-                updateRoomState({ themeOptions: themes })
-            })
-
-            s.on('theme:vote_update', ({ votes }) => {
-                updateRoomState({ themeVotes: votes })
-            })
-
-            s.on('theme:final', ({ theme }) => {
-                updateRoomState({ selectedTheme: theme })
-            })
-
-            s.on('timer:tick', ({ timeLeft }) => {
-                updateRoomState({ timeLeft })
-            })
-
-            s.on('voting:drawing', (data) => {
-                console.log('VOTING DRAWING RAW:', JSON.stringify(data).slice(0, 300))
+            }),
+            client.subscribe(`/topic/room/${roomCode}/theme/options`, msg => {
+                const d = JSON.parse(msg.body)
+                updateRoomState({ themeOptions: d.themes })
+            }),
+            client.subscribe(`/topic/room/${roomCode}/theme/vote_update`, msg => {
+                const d = JSON.parse(msg.body)
+                updateRoomState({ themeVotes: d.votes })
+            }),
+            client.subscribe(`/topic/room/${roomCode}/theme/final`, msg => {
+                const d = JSON.parse(msg.body)
+                updateRoomState({ selectedTheme: d.theme })
+            }),
+            client.subscribe(`/topic/room/${roomCode}/room/theme_selected`, msg => {
+                const d = JSON.parse(msg.body)
+                updateRoomState({ selectedTheme: d.theme })
+            }),
+            client.subscribe(`/topic/room/${roomCode}/timer/tick`, msg => {
+                const d = JSON.parse(msg.body)
+                updateRoomState({ timeLeft: d.timeLeft })
+            }),
+            client.subscribe(`/topic/room/${roomCode}/drawing/stroke`, msg => {
+                // handled by DrawingPhase directly if needed
+            }),
+            client.subscribe(`/topic/room/${roomCode}/drawing/submitted`, msg => {
+                // optional: show submission progress
+            }),
+            client.subscribe(`/topic/room/${roomCode}/voting/drawing`, msg => {
+                const d = JSON.parse(msg.body)
                 updateRoomState({
-                    votingDrawing: data,
+                    votingDrawing: d,
                     votingResult: null,
                     votingVotes: {},
                     votingTimeLeft: 10,
                 })
-            })
-            s.on('voting:tick', ({ timeLeft }) => {
-                updateRoomState({ votingTimeLeft: timeLeft })  // 👈
-            })
-
-            s.on('voting:update', ({ drawingId, reactions, totalVotes }) => {
+            }),
+            client.subscribe(`/topic/room/${roomCode}/voting/tick`, msg => {
+                const d = JSON.parse(msg.body)
+                updateRoomState({ votingTimeLeft: d.timeLeft })
+            }),
+            client.subscribe(`/topic/room/${roomCode}/voting/update`, msg => {
+                const d = JSON.parse(msg.body)
                 setRoomState(prev => ({
                     ...prev,
                     votingVotes: {
                         ...prev.votingVotes,
-                        [drawingId]: { reactions, totalVotes },
+                        [d.drawingId]: { reactions: d.reactions, totalVotes: d.totalVotes },
                     },
                 }))
+            }),
+            client.subscribe(`/topic/room/${roomCode}/voting/result`, msg => {
+                const d = JSON.parse(msg.body)
+                updateRoomState({ votingResult: d })
+            }),
+            client.subscribe(`/topic/room/${roomCode}/results/data`, msg => {
+                const d = JSON.parse(msg.body)
+                updateRoomState({ results: d })
+            }),
+            client.subscribe(`/topic/room/${roomCode}/room/error`, msg => {
+                const d = JSON.parse(msg.body)
+                console.error('room error:', d.message)
+            }),
+        ]
+        return subs
+    }, [updateRoomState])
+
+    useEffect(() => {
+        if (isLoading || !isAuthenticated || !userId) return
+
+        let client: Client
+        let roomSubs: any[] = []
+
+        const connect = async () => {
+            const token = await getAccessTokenSilently()
+
+            client = new Client({
+                webSocketFactory: () => new SockJS(
+                    `${import.meta.env.VITE_API_URL}/ws?userId=${encodeURIComponent(userId)}`
+                ),
+                connectHeaders: {
+                    userId,                              // 👈 sent as STOMP header too
+                    Authorization: `Bearer ${token}`,
+                },
+                reconnectDelay: 5000,
+
+                onConnect: () => {
+                    setIsConnected(true)
+
+                    // Presence — online users list
+                    client.subscribe('/user/queue/presence/online_users', msg => {
+                        const users: string[] = JSON.parse(msg.body)
+                        setOnlineUsers(new Set(users))
+                    })
+
+                    // Presence — updates
+                    client.subscribe('/topic/presence', msg => {
+                        const d = JSON.parse(msg.body)
+                        setOnlineUsers(prev => {
+                            const next = new Set(prev)
+                            d.online ? next.add(d.userId) : next.delete(d.userId)
+                            return next
+                        })
+                    })
+
+                    // Personal events (room state, invites, errors)
+                    client.subscribe('/user/queue/room/state', msg => {
+                        const d = JSON.parse(msg.body)
+                        updateRoomState({
+                            phase: d.phase,
+                            connectedPlayers: d.connectedPlayers,
+                        })
+                    })
+
+                    client.subscribe('/user/queue/room/invite', msg => {
+                        const d = JSON.parse(msg.body)
+                        setPendingInvites(prev => [
+                            ...prev,
+                            { id: crypto.randomUUID(), ...d }
+                        ])
+                    })
+
+                    client.subscribe('/user/queue/room/error', msg => {
+                        const d = JSON.parse(msg.body)
+                        console.error('room error:', d.message)
+                    })
+
+                    // Request online users
+                    client.publish({
+                        destination: '/app/presence/online',
+                        body: JSON.stringify({ userId }),
+                    })
+
+                    // Re-subscribe to room if we were in one
+                    if (currentRoomCodeRef.current) {
+                        subscribeToRoom(client, currentRoomCodeRef.current)
+                    }
+                },
+
+                onDisconnect: () => setIsConnected(false),
+                onStompError: frame => console.error('STOMP error:', frame),
             })
 
-            s.on('voting:result', (data) => {
-                updateRoomState({ votingResult: data })
-            })
-
-            s.on('results:data', (results) => {
-                updateRoomState({ results })
-            })
+            client.activate()
+            setStompClient(client)
         }
 
-        connectSocket()
+        connect()
 
         return () => {
-            s?.disconnect()
-            setSocket(null)
+            roomSubs.forEach(s => s?.unsubscribe())
+            client?.deactivate()
+            setStompClient(null)
             setIsConnected(false)
             setOnlineUsers(new Set())
             setRoomState(defaultRoomState)
         }
+    }, [isLoading, isAuthenticated, userId, getAccessTokenSilently, updateRoomState, subscribeToRoom])
 
-    }, [isLoading, isAuthenticated, userId, getAccessTokenSilently, updateRoomState])
-
-    const joinRoom = useCallback((roomCode: string, playerName: string, avatarColor: string) => {
-        socket?.emit('room:join', {
-            roomCode,
-            playerName,
-            avatarColor,
-        })
+    const joinRoom = useCallback((roomCode: string, playerName: string) => {
+        if (!stompClient?.connected) return
         setCurrentRoomCode(roomCode)
-    }, [socket])
+        currentRoomCodeRef.current = roomCode
+
+        // Subscribe to room topics
+        subscribeToRoom(stompClient, roomCode)
+
+        stompClient.publish({
+            destination: '/app/room/join',
+            body: JSON.stringify({ roomCode, playerName }),
+        })
+    }, [stompClient, subscribeToRoom])
 
     const leaveRoom = useCallback((roomCode: string) => {
-        socket?.emit('room:leave', { roomCode })
+        stompClient?.publish({
+            destination: '/app/room/leave',
+            body: JSON.stringify({ roomCode }),
+        })
         setCurrentRoomCode(null)
+        currentRoomCodeRef.current = null
         setRoomState(defaultRoomState)
-    }, [socket])
+    }, [stompClient])
 
     const startGame = useCallback((roomCode: string) => {
-        socket?.emit('room:startGame', { roomCode })
-    }, [socket])
+        stompClient?.publish({
+            destination: '/app/room/startGame',
+            body: JSON.stringify({ roomCode }),
+        })
+    }, [stompClient])
 
     const submitThemeOptions = useCallback((roomCode: string, themes: string[]) => {
-        socket?.emit('theme:options', { roomCode, themes })
-    }, [socket])
+        stompClient?.publish({
+            destination: '/app/theme/options',
+            body: JSON.stringify({ roomCode, themes }),
+        })
+    }, [stompClient])
 
     const voteTheme = useCallback((roomCode: string, theme: string) => {
-        socket?.emit('theme:vote', { roomCode, theme })
-    }, [socket])
+        stompClient?.publish({
+            destination: '/app/theme/vote',
+            body: JSON.stringify({ roomCode, theme }),
+        })
+    }, [stompClient])
 
     const broadcastStroke = useCallback((roomCode: string, stroke: any) => {
-        socket?.emit('drawing:stroke', { roomCode, stroke })
-    }, [socket])
+        stompClient?.publish({
+            destination: '/app/drawing/stroke',
+            body: JSON.stringify({ roomCode, stroke }),
+        })
+    }, [stompClient])
 
     const submitDrawing = useCallback((roomCode: string, playerName: string, strokes: any[]) => {
-        socket?.emit('drawing:submit', { roomCode, playerName, strokes })
-    }, [socket])
+        stompClient?.publish({
+            destination: '/app/drawing/submit',
+            body: JSON.stringify({ roomCode, playerName, strokes }),
+        })
+    }, [stompClient])
 
     const castVote = useCallback((roomCode: string, drawingId: string, reaction: string) => {
-        socket?.emit('voting:vote', { roomCode, drawingId, reaction })
-    }, [socket])
+        stompClient?.publish({
+            destination: '/app/voting/vote',
+            body: JSON.stringify({ roomCode, drawingId, reaction }),
+        })
+    }, [stompClient])
 
     const acceptRoomInvite = useCallback((inviteId: string) => {
         const invite = pendingInvites.find(i => i.id === inviteId)
-
-        if (invite && socket) {
-            socket.emit('room:join', {
-                roomCode: invite.roomCode,
-                playerName: user?.name || 'Player',
-                avatarColor: '#fff',
-            })
+        if (invite && stompClient?.connected) {
+            joinRoom(invite.roomCode, user?.name || 'Player')
         }
-
         setPendingInvites(prev => prev.filter(i => i.id !== inviteId))
-    }, [pendingInvites, socket, user])
+    }, [pendingInvites, stompClient, user, joinRoom])
 
     const rejectRoomInvite = useCallback((inviteId: string) => {
         setPendingInvites(prev => prev.filter(i => i.id !== inviteId))
@@ -336,7 +399,7 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     const isOnline = useCallback((uid: string) => onlineUsers.has(uid), [onlineUsers])
 
     const value = useMemo(() => ({
-        socket,
+        stompClient,
         isConnected,
         onlineUsers,
         isOnline,
@@ -354,23 +417,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         acceptRoomInvite,
         rejectRoomInvite,
     }), [
-        socket,
-        isConnected,
-        onlineUsers,
-        isOnline,
-        roomState,
-        currentRoomCode,
-        pendingInvites,
-        joinRoom,
-        leaveRoom,
-        startGame,
-        submitThemeOptions,
-        voteTheme,
-        broadcastStroke,
-        submitDrawing,
-        castVote,
-        acceptRoomInvite,
-        rejectRoomInvite,
+        stompClient, isConnected, onlineUsers, isOnline, roomState,
+        currentRoomCode, pendingInvites, joinRoom, leaveRoom, startGame,
+        submitThemeOptions, voteTheme, broadcastStroke, submitDrawing,
+        castVote, acceptRoomInvite, rejectRoomInvite,
     ])
 
     return (
