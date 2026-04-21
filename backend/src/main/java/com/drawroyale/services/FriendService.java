@@ -2,8 +2,11 @@ package com.drawroyale.services;
 
 import com.drawroyale.entities.*;
 import com.drawroyale.repositories.*;
+import com.drawroyale.socket.RoomSocketHandler;
 
 import lombok.RequiredArgsConstructor;
+
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,6 +23,8 @@ public class FriendService {
     private final FriendRequestRepository friendRequestRepository;
     private final PlayerRepository playerRepository;
     private final RoomRepository roomRepository;
+    @Lazy
+    private final RoomSocketHandler roomSocketHandler;
 
     public List<Player> getFriends(String userId) {
         return playerFriendRepository.findByPlayerId(userId).stream()
@@ -144,13 +149,11 @@ public class FriendService {
         roomRepository.findByCode(roomCode)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Room not found"));
 
-        Player sender = playerRepository.findById(userId)
-            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Player not found"));
+        Player sender = playerRepository.findById(userId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Player not found"));
 
-        return Map.of(
-            "message", "Room invite sent",
-            "roomCode", roomCode,
-            "sender", sender
-        );
-    }
+        // Trigger the socket invite directly
+        roomSocketHandler.sendInviteDirectly(userId, friendId, roomCode, sender.getFullName());
+
+        return Map.of("message", "Room invite sent", "roomCode", roomCode, "sender", sender);
+        }
 }

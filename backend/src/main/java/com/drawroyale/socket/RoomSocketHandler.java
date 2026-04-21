@@ -1,8 +1,5 @@
 package com.drawroyale.socket;
 
-import com.corundumstudio.socketio.AckRequest;
-import com.corundumstudio.socketio.SocketIOClient;
-import com.corundumstudio.socketio.SocketIOServer;
 import com.drawroyale.entities.Drawing;
 import com.drawroyale.entities.Room;
 import com.drawroyale.repositories.DrawingRepository;
@@ -10,36 +7,40 @@ import com.drawroyale.repositories.PlayerRepository;
 import com.drawroyale.repositories.RankingRepository;
 import com.drawroyale.repositories.RoomRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
+import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.stereotype.Controller;
 
 import java.util.*;
 import java.util.concurrent.*;
 
 @Slf4j
-@Component
+@Controller
 @RequiredArgsConstructor
 public class RoomSocketHandler {
 
-    private final SocketIOServer server;
+    private final SimpMessagingTemplate messaging;
     private final RoomRepository roomRepository;
     private final DrawingRepository drawingRepository;
     private final RankingRepository rankingRepository;
     private final PlayerRepository playerRepository;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
 
-    private final Map<String, ScheduledFuture<?>> roomTimers  = new ConcurrentHashMap<>();
-    private final ScheduledExecutorService scheduler          = Executors.newScheduledThreadPool(4);
-    private final Map<String, RoomState>     roomStates       = new ConcurrentHashMap<>();
-    private final Map<String, VotingState>   votingStates     = new ConcurrentHashMap<>();
-    private final Map<String, SocketIOClient> userSockets     = new ConcurrentHashMap<>();
+    private final Map<String, ScheduledFuture<?>> roomTimers = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService scheduler         = Executors.newScheduledThreadPool(4);
+    private final Map<String, RoomState>    roomStates       = new ConcurrentHashMap<>();
+    private final Map<String, VotingState>  votingStates     = new ConcurrentHashMap<>();
+
+    // userId -> sessionId for direct messaging
+    private final Map<String, String> userSessions = new ConcurrentHashMap<>();
 
     public static final List<String> VOTE_OPTIONS =
         List.of("What is this?", "Meh", "Nice", "Awesome", "Legendary");
 
-    // Weight used to calculate final score from reactions
     private static final Map<String, Integer> SCORE_WEIGHTS = Map.of(
         "What is this?", 1,
         "Meh",           2,
@@ -48,21 +49,16 @@ public class RoomSocketHandler {
         "Legendary",     5
     );
 
-    // In-memory state models
+    // ─── State Classes ────────────────────────────────────────────────────────
+
     static class ConnectedPlayer {
-        String userId, playerName, avatarColor, imageUrl, socketId;
+        String userId, playerName, avatarColor, imageUrl, sessionId;
     }
 
     static class RoomState {
-        String phase;
-        String roomId;
-        // Active players in the room
+        String phase, roomId;
         Map<String, ConnectedPlayer> connectedPlayers = new ConcurrentHashMap<>();
-
-        // Tracks drawing submission status per user
         Map<String, Object>          drawingStatus    = new ConcurrentHashMap<>();
-
-        // Theme voting state
         Map<String, Integer>         themeVotes       = new ConcurrentHashMap<>();
         List<String>                 themeOptions     = new ArrayList<>();
         Set<String>                  votedPlayers     = ConcurrentHashMap.newKeySet();
@@ -74,77 +70,62 @@ public class RoomSocketHandler {
     }
 
     static class VotingState {
-        List<Drawing>        drawings     = new ArrayList<>();
-        int                  currentIndex = 0;
-
-        // drawingId → votes
-        Map<String, VoteEntry> votes      = new ConcurrentHashMap<>();
+        List<Drawing>          drawings     = new ArrayList<>();
+        int                    currentIndex = 0;
+        Map<String, VoteEntry> votes        = new ConcurrentHashMap<>();
     }
 
-    // Socket event registration
-    @PostConstruct
-    public void registerHandlers() {
-        server.addConnectListener(this::onConnect);
-        server.addDisconnectListener(this::onDisconnecting);
+    // ─── Called by WebSocketEventListener ────────────────────────────────────
 
-        // Room lifecycle events
-        server.addEventListener("room:join",      Map.class, this::onRoomJoin);
-        server.addEventListener("room:leave",     Map.class, this::onRoomLeave);
-        server.addEventListener("room:startGame", Map.class, this::onStartGame);
-        
-        // Gameplay events
-        server.addEventListener("theme:options",  Map.class, this::onThemeOptions);
-        server.addEventListener("theme:vote",     Map.class, this::onThemeVote);
-        server.addEventListener("drawing:stroke", Map.class, this::onDrawingStroke);
-        server.addEventListener("drawing:submit", Map.class, this::onDrawingSubmit);
-        server.addEventListener("voting:vote",    Map.class, this::onVotingVote);
-
-        // Social event
-        server.addEventListener("room:invite",    Map.class, this::onRoomInvite);
+    public void registerSession(String userId, String sessionId) {
+        userSessions.put(userId, sessionId);
     }
 
-    // Connection handling 
-    private void onConnect(SocketIOClient client) {
-        String userId = getUserId(client);
-        if (userId == null) return;
-
-        // Track active socket for direct messaging / invites
-        userSockets.put(userId, client);
-    }
-
-    private void onDisconnecting(SocketIOClient client) {
-        String userId = getUserId(client);
-        if (userId == null) return;
-
-        userSockets.remove(userId);
-
-        // Remove user from all rooms they were part of
-        for (String roomCode : client.getAllRooms()) {
-            if (roomCode.equals(client.getSessionId().toString())) continue;
-            removePlayer(roomCode, userId);
+    public void handleDisconnect(String userId) {
+        userSessions.remove(userId);
+        for (String roomCode : roomStates.keySet()) {
+            RoomState state = roomStates.get(roomCode);
+            if (state != null && state.connectedPlayers.containsKey(userId)) {
+                removePlayer(roomCode, userId);
+            }
         }
     }
 
-    // room:join 
-    private void onRoomJoin(SocketIOClient client, Map data, AckRequest ack) {
-        String userId     = getUserId(client);
+    public void sendInviteDirectly(String senderId, String friendId, String roomCode, String senderName) {
+    String friendSession = userSessions.get(friendId);
+    if (friendSession != null) {
+        sendToUser(friendSession, "room/invite", Map.of(
+            "roomCode",   roomCode,
+            "senderName", senderName,
+            "senderId",   senderId
+        ));
+        log.info("invite sent from {} to {} for room {}", senderId, friendId, roomCode);
+    } else {
+        log.warn("invite target {} not in userSessions", friendId);
+    }
+}
+
+    // ─── room:join ────────────────────────────────────────────────────────────
+
+    @MessageMapping("/room/join")
+    public void joinRoom(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+        String userId     = getUserId(accessor);
         String roomCode   = (String) data.get("roomCode");
         String playerName = (String) data.get("playerName");
         String avatarColor = (String) data.get("avatarColor");
         if (userId == null || roomCode == null) return;
 
+        userSessions.put(userId, accessor.getSessionId());
+
         try {
             Room room = roomRepository.findByCode(roomCode).orElse(null);
             if (room == null) {
-                client.sendEvent("room:error", Map.of("message", "Room not found"));
+                sendToUser(accessor.getSessionId(), "room/error", Map.of("message", "Room not found"));
                 return;
             }
 
-            client.joinRoom(roomCode);
-
             var userPlayer = playerRepository.findById(userId).orElse(null);
 
-            // Ensure room state exists in memory
             roomStates.computeIfAbsent(roomCode, k -> {
                 RoomState s = new RoomState();
                 s.phase  = room.getPhase().name();
@@ -154,27 +135,25 @@ public class RoomSocketHandler {
 
             RoomState state = roomStates.get(roomCode);
 
-            // Register connected player in memory state
             ConnectedPlayer cp = new ConnectedPlayer();
             cp.userId      = userId;
             cp.playerName  = userPlayer != null ? userPlayer.getFullName() : playerName;
             cp.avatarColor = avatarColor;
             cp.imageUrl    = userPlayer != null ? userPlayer.getImageUrl() : null;
-            cp.socketId    = client.getSessionId().toString();
+            cp.sessionId   = accessor.getSessionId();
             state.connectedPlayers.put(userId, cp);
 
             List<Map<String, Object>> players = connectedPlayersList(state);
 
-            // Broadcast updated player list
-            server.getRoomOperations(roomCode).sendEvent("room:playerJoined", Map.of(
+            sendToRoom(roomCode, "room/playerJoined", Map.of(
                 "userId",           userId,
-                "playerName",       cp.playerName != null ? cp.playerName : "",
-                "avatarColor",      avatarColor  != null ? avatarColor   : "",
-                "imageUrl",         cp.imageUrl  != null ? cp.imageUrl   : "",
+                "playerName",       cp.playerName  != null ? cp.playerName  : "",
+                "avatarColor",      avatarColor    != null ? avatarColor    : "",
+                "imageUrl",         cp.imageUrl    != null ? cp.imageUrl    : "",
                 "connectedPlayers", players
             ));
 
-            client.sendEvent("room:state", Map.of(
+            sendToUser(accessor.getSessionId(), "room/state", Map.of(
                 "room",             roomToMap(room),
                 "phase",            state.phase,
                 "connectedPlayers", players
@@ -182,23 +161,25 @@ public class RoomSocketHandler {
 
         } catch (Exception e) {
             log.error("room:join error", e);
-            client.sendEvent("room:error", Map.of("message", "Failed to join room"));
+            sendToUser(accessor.getSessionId(), "room/error", Map.of("message", "Failed to join room"));
         }
     }
 
-    // room:leave 
-    private void onRoomLeave(SocketIOClient client, Map data, AckRequest ack) {
-        String userId   = getUserId(client);
+    // ─── room:leave ───────────────────────────────────────────────────────────
+
+    @MessageMapping("/room/leave")
+    public void leaveRoom(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+        String userId   = getUserId(accessor);
         String roomCode = (String) data.get("roomCode");
         if (userId == null || roomCode == null) return;
-
-        client.leaveRoom(roomCode);
         removePlayer(roomCode, userId);
     }
 
-    // room:startGame 
-    private void onStartGame(SocketIOClient client, Map data, AckRequest ack) {
-        String userId   = getUserId(client);
+    // ─── room:startGame ───────────────────────────────────────────────────────
+
+    @MessageMapping("/room/startGame")
+    public void startGame(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+        String userId   = getUserId(accessor);
         String roomCode = (String) data.get("roomCode");
         if (userId == null || roomCode == null) return;
 
@@ -209,34 +190,31 @@ public class RoomSocketHandler {
             Room room = roomRepository.findByCode(roomCode).orElse(null);
             if (room == null) return;
 
-            // Only host can start the game
             if (!room.getHostId().equals(userId)) {
-                client.sendEvent("room:error", Map.of("message", "Only the host can start the game"));
+                sendToUser(accessor.getSessionId(), "room/error", Map.of("message", "Only the host can start the game"));
                 return;
             }
 
-            // Require minimum players
             if (state.connectedPlayers.size() < 2) {
-                client.sendEvent("room:error", Map.of("message", "Need at least 2 players to start"));
+                sendToUser(accessor.getSessionId(), "room/error", Map.of("message", "Need at least 2 players to start"));
                 return;
             }
 
-            // Reset game data
             drawingRepository.deleteAll(drawingRepository.findByRoomCode(roomCode));
             rankingRepository.deleteAll(rankingRepository.findByRoomCode(roomCode));
 
-            // Start theme selection phase
             transitionPhase(roomCode, "theme_vote", null);
 
         } catch (Exception e) {
             log.error("room:startGame error", e);
-            client.sendEvent("room:error", Map.of("message", "Failed to start game"));
         }
     }
 
-    // theme:options 
-    private void onThemeOptions(SocketIOClient client, Map data, AckRequest ack) {
-        String userId   = getUserId(client);
+    // ─── theme:options ────────────────────────────────────────────────────────
+
+    @MessageMapping("/theme/options")
+    public void themeOptions(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+        String userId   = getUserId(accessor);
         String roomCode = (String) data.get("roomCode");
         if (userId == null || roomCode == null) return;
 
@@ -254,35 +232,32 @@ public class RoomSocketHandler {
             state.votedPlayers = ConcurrentHashMap.newKeySet();
             for (String t : themes) state.themeVotes.put(t, 0);
 
-            server.getRoomOperations(roomCode).sendEvent("theme:options", Map.of("themes", themes));
+            sendToRoom(roomCode, "theme/options", Map.of("themes", themes));
 
         } catch (Exception e) {
             log.error("theme:options error", e);
         }
     }
 
-    // theme:vote 
-    private void onThemeVote(SocketIOClient client, Map data, AckRequest ack) {
-        String userId   = getUserId(client);
+    // ─── theme:vote ───────────────────────────────────────────────────────────
+
+    @MessageMapping("/theme/vote")
+    public void themeVote(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+        String userId   = getUserId(accessor);
         String roomCode = (String) data.get("roomCode");
         String theme    = (String) data.get("theme");
         if (userId == null || roomCode == null || theme == null) return;
 
         try {
             RoomState state = roomStates.get(roomCode);
-            if (state == null) return;
-            if (state.votedPlayers.contains(userId)) return;
+            if (state == null || state.votedPlayers.contains(userId)) return;
 
             state.votedPlayers.add(userId);
             state.themeVotes.merge(theme, 1, Integer::sum);
 
-            server.getRoomOperations(roomCode).sendEvent("theme:vote_update",
-                Map.of("votes", new HashMap<>(state.themeVotes))
-            );
+            sendToRoom(roomCode, "theme/vote_update", Map.of("votes", new HashMap<>(state.themeVotes)));
 
-            // If all players voted end theme
             int totalVotes = state.themeVotes.values().stream().mapToInt(i -> i).sum();
-
             if (totalVotes >= state.connectedPlayers.size()) {
                 String winner = state.themeVotes.entrySet().stream()
                     .max(Comparator.comparingInt(Map.Entry::getValue))
@@ -293,14 +268,11 @@ public class RoomSocketHandler {
                 room.setTheme(winner);
                 roomRepository.save(room);
 
-                server.getRoomOperations(roomCode).sendEvent("theme:final",         Map.of("theme", winner));
-                server.getRoomOperations(roomCode).sendEvent("room:theme_selected", Map.of("theme", winner));
+                sendToRoom(roomCode, "theme/final",         Map.of("theme", winner));
+                sendToRoom(roomCode, "room/theme_selected", Map.of("theme", winner));
 
                 int drawSeconds = room.getDrawTimeSeconds();
-                scheduler.schedule(() ->
-                    transitionPhase(roomCode, "drawing", drawSeconds),
-                    2, TimeUnit.SECONDS
-                );
+                scheduler.schedule(() -> transitionPhase(roomCode, "drawing", drawSeconds), 2, TimeUnit.SECONDS);
             }
 
         } catch (Exception e) {
@@ -308,22 +280,26 @@ public class RoomSocketHandler {
         }
     }
 
-    // drawing:stroke 
-    private void onDrawingStroke(SocketIOClient client, Map data, AckRequest ack) {
-        String userId   = getUserId(client);
+    // ─── drawing:stroke ───────────────────────────────────────────────────────
+
+    @MessageMapping("/drawing/stroke")
+    public void drawingStroke(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+        String userId   = getUserId(accessor);
         String roomCode = (String) data.get("roomCode");
         Object stroke   = data.get("stroke");
         if (roomCode == null || stroke == null) return;
 
-        server.getRoomOperations(roomCode).sendEvent("drawing:stroke",
-            client,
-            Map.of("userId", userId != null ? userId : "", "stroke", stroke)
-        );
+        sendToRoom(roomCode, "drawing/stroke", Map.of(
+            "userId", userId != null ? userId : "",
+            "stroke", stroke
+        ));
     }
 
-    // drawing:submit 
-    private void onDrawingSubmit(SocketIOClient client, Map data, AckRequest ack) {
-        String userId     = getUserId(client);
+    // ─── drawing:submit ───────────────────────────────────────────────────────
+
+    @MessageMapping("/drawing/submit")
+    public void drawingSubmit(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+        String userId     = getUserId(accessor);
         String roomCode   = (String) data.get("roomCode");
         String playerName = (String) data.get("playerName");
         Object strokes    = data.get("strokes");
@@ -365,7 +341,7 @@ public class RoomSocketHandler {
 
             log.info("drawing:submit — {}/{}", state.drawingStatus.size(), state.connectedPlayers.size());
 
-            server.getRoomOperations(roomCode).sendEvent("drawing:submitted", Map.of(
+            sendToRoom(roomCode, "drawing/submitted", Map.of(
                 "userId",         userId,
                 "drawingId",      drawing.getId(),
                 "totalSubmitted", state.drawingStatus.size(),
@@ -381,14 +357,15 @@ public class RoomSocketHandler {
         } catch (Exception e) {
             state.drawingStatus.remove(userId);
             log.error("drawing:submit error", e);
-            client.sendEvent("room:error", Map.of("message", "Failed to submit drawing"));
+            sendToUser(accessor.getSessionId(), "room/error", Map.of("message", "Failed to submit drawing"));
         }
     }
 
-    // voting:vote 
+    // ─── voting:vote ──────────────────────────────────────────────────────────
 
-    private void onVotingVote(SocketIOClient client, Map data, AckRequest ack) {
-        String userId    = getUserId(client);
+    @MessageMapping("/voting/vote")
+    public void votingVote(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+        String userId    = getUserId(accessor);
         String roomCode  = (String) data.get("roomCode");
         String drawingId = (String) data.get("drawingId");
         String reaction  = (String) data.get("reaction");
@@ -398,8 +375,7 @@ public class RoomSocketHandler {
         if (vs == null) return;
 
         VoteEntry entry = vs.votes.get(drawingId);
-        if (entry == null) return;
-        if (entry.voters.contains(userId)) return;
+        if (entry == null || entry.voters.contains(userId)) return;
 
         entry.voters.add(userId);
 
@@ -410,33 +386,40 @@ public class RoomSocketHandler {
             log.warn("unknown reaction key: '{}'", reaction);
         }
 
-        server.getRoomOperations(roomCode).sendEvent("voting:update", Map.of(
+        sendToRoom(roomCode, "voting/update", Map.of(
             "drawingId",  drawingId,
             "reactions",  new HashMap<>(entry.reactions),
             "totalVotes", entry.voters.size()
         ));
     }
 
-    // room:invite 
+    // ─── room:invite ──────────────────────────────────────────────────────────
 
-    private void onRoomInvite(SocketIOClient client, Map data, AckRequest ack) {
-        String userId     = getUserId(client);
+    @MessageMapping("/room/invite")
+    public void roomInvite(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+        String userId     = getUserId(accessor);
         String friendId   = (String) data.get("friendId");
         String roomCode   = (String) data.get("roomCode");
         String senderName = (String) data.get("senderName");
         if (friendId == null || roomCode == null) return;
 
-        SocketIOClient friendClient = userSockets.get(friendId);
-        if (friendClient != null) {
-            friendClient.sendEvent("room:invite", Map.of(
+        log.info("room:invite from {} to {} for room {}", userId, friendId, roomCode);
+
+        String friendSession = userSessions.get(friendId);
+        if (friendSession != null) {
+            log.info("sending invite to friendSession={}", friendSession);
+            sendToUser(friendSession, "room/invite", Map.of(
                 "roomCode",   roomCode,
                 "senderName", senderName != null ? senderName : "Someone",
                 "senderId",   userId     != null ? userId     : ""
             ));
+        } else {
+            log.warn("friend {} not found in userSessions — they may be offline", friendId);
         }
     }
 
-    //  Phase Transitions 
+    // ─── Phase Transitions ────────────────────────────────────────────────────
+
     private void transitionPhase(String roomCode, String phase, Integer drawSeconds) {
         RoomState state = roomStates.get(roomCode);
         if (state == null) return;
@@ -455,42 +438,40 @@ public class RoomSocketHandler {
             room.setPhase(Room.Phase.valueOf(phase));
             roomRepository.save(room);
         } catch (Exception e) {
-            log.error("DB phase update failed for \"{}\": {}", phase, e.getMessage());
+            log.error("DB phase update failed: {}", e.getMessage());
         }
 
         state.phase = phase;
 
-        if ("drawing".equals(phase))   state.drawingStatus = new ConcurrentHashMap<>();
+        if ("drawing".equals(phase))    state.drawingStatus = new ConcurrentHashMap<>();
         if ("theme_vote".equals(phase)) state.votedPlayers  = ConcurrentHashMap.newKeySet();
 
-        server.getRoomOperations(roomCode).sendEvent("phase:changed", Map.of("phase", phase));
+        sendToRoom(roomCode, "phase/changed", Map.of("phase", phase));
 
         if ("drawing".equals(phase) && drawSeconds != null) startDrawTimer(roomCode, drawSeconds);
         if ("voting".equals(phase))  startVotingRound(roomCode);
         if ("results".equals(phase)) sendResults(roomCode);
     }
 
-    // Draw Timer 
+    // ─── Draw Timer ───────────────────────────────────────────────────────────
+
     private void startDrawTimer(String roomCode, int seconds) {
         clearRoomTimer(roomCode);
         int[] timeLeft    = { seconds };
         boolean[] expired = { false };
 
-        server.getRoomOperations(roomCode).sendEvent("timer:tick", Map.of("timeLeft", timeLeft[0]));
+        sendToRoom(roomCode, "timer/tick", Map.of("timeLeft", timeLeft[0]));
 
         ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(() -> {
             if (expired[0]) return;
-
             timeLeft[0]--;
-            server.getRoomOperations(roomCode).sendEvent("timer:tick", Map.of("timeLeft", timeLeft[0]));
+            sendToRoom(roomCode, "timer/tick", Map.of("timeLeft", timeLeft[0]));
 
             if (timeLeft[0] <= 0) {
                 expired[0] = true;
                 clearRoomTimer(roomCode);
                 RoomState state = roomStates.get(roomCode);
                 if (state != null && "drawing".equals(state.phase)) {
-                    log.info("timer expired → voting ({}/{} submitted)",
-                        state.drawingStatus.size(), state.connectedPlayers.size());
                     transitionPhase(roomCode, "voting", null);
                 }
             }
@@ -499,9 +480,9 @@ public class RoomSocketHandler {
         roomTimers.put(roomCode, future);
     }
 
-    //  Voting Round
+    // ─── Voting Round ─────────────────────────────────────────────────────────
+
     private void startVotingRound(String roomCode) {
-        log.info("startVotingRound called for {}", roomCode);
         RoomState state = roomStates.get(roomCode);
         if (state == null) return;
 
@@ -510,8 +491,6 @@ public class RoomSocketHandler {
         Map<String, Drawing> seen = new LinkedHashMap<>();
         for (Drawing d : drawings) seen.putIfAbsent(d.getPlayer().getId(), d);
         List<Drawing> unique = new ArrayList<>(seen.values());
-
-        log.info("startVotingRound — {} unique drawings", unique.size());
 
         if (unique.isEmpty()) {
             transitionPhase(roomCode, "results", null);
@@ -535,16 +514,12 @@ public class RoomSocketHandler {
         if (vs == null) return;
 
         if (vs.currentIndex >= vs.drawings.size()) {
-            log.info("showNextDrawing — all drawings shown for {}", roomCode);
             transitionPhase(roomCode, "results", null);
             return;
         }
 
         Drawing drawing = vs.drawings.get(vs.currentIndex);
-        log.info("showNextDrawing — drawing {}/{} for {}",
-            vs.currentIndex + 1, vs.drawings.size(), roomCode);
 
-        // Parse strokes back to object so frontend receives an array, not a string
         Object strokesObj;
         try {
             strokesObj = objectMapper.readValue(drawing.getStrokes(), Object.class);
@@ -552,7 +527,7 @@ public class RoomSocketHandler {
             strokesObj = List.of();
         }
 
-        server.getRoomOperations(roomCode).sendEvent("voting:drawing", Map.of(
+        sendToRoom(roomCode, "voting/drawing", Map.of(
             "drawingId",  drawing.getId(),
             "playerId",   drawing.getPlayer().getId(),
             "playerName", drawing.getPlayerName(),
@@ -563,24 +538,22 @@ public class RoomSocketHandler {
 
         int[] timeLeft    = { 10 };
         boolean[] expired = { false };
+        String timerKey   = roomCode + "_voting";
 
-        server.getRoomOperations(roomCode).sendEvent("voting:tick", Map.of("timeLeft", timeLeft[0]));
-
-        String timerKey = roomCode + "_voting";
+        sendToRoom(roomCode, "voting/tick", Map.of("timeLeft", timeLeft[0]));
         clearRoomTimer(timerKey);
 
         ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(() -> {
             if (expired[0]) return;
-
             timeLeft[0]--;
-            server.getRoomOperations(roomCode).sendEvent("voting:tick", Map.of("timeLeft", timeLeft[0]));
+            sendToRoom(roomCode, "voting/tick", Map.of("timeLeft", timeLeft[0]));
 
             if (timeLeft[0] <= 0) {
                 expired[0] = true;
                 clearRoomTimer(timerKey);
 
                 VoteEntry vote = vs.votes.get(drawing.getId());
-                server.getRoomOperations(roomCode).sendEvent("voting:result", Map.of(
+                sendToRoom(roomCode, "voting/result", Map.of(
                     "drawingId",  drawing.getId(),
                     "reactions",  vote != null ? new HashMap<>(vote.reactions) : Map.of(),
                     "totalVotes", vote != null ? vote.voters.size() : 0
@@ -596,22 +569,17 @@ public class RoomSocketHandler {
         roomTimers.put(timerKey, future);
     }
 
-    // Results 
+    // ─── Results ──────────────────────────────────────────────────────────────
+
     private void sendResults(String roomCode) {
-        RoomState state  = roomStates.get(roomCode);
-        VotingState vs   = votingStates.get(roomCode);
-        if (state == null) return;
+        VotingState vs = votingStates.get(roomCode);
 
         List<Drawing> drawings = drawingRepository.findByRoomCode(roomCode);
-
-        // Keep only the first drawing per player, same as voting round
         Map<String, Drawing> seen = new LinkedHashMap<>();
         for (Drawing d : drawings) seen.putIfAbsent(d.getPlayer().getId(), d);
-        List<Drawing> unique = new ArrayList<>(seen.values());
 
         List<Map<String, Object>> results = new ArrayList<>();
-
-        for (Drawing d : unique) {
+        for (Drawing d : new ArrayList<>(seen.values())) {
             VoteEntry vote = vs != null ? vs.votes.get(d.getId()) : null;
 
             Map<String, Integer> reactions = new HashMap<>();
@@ -622,7 +590,6 @@ public class RoomSocketHandler {
                 .mapToInt(e -> SCORE_WEIGHTS.getOrDefault(e.getKey(), 0) * e.getValue())
                 .sum();
 
-            // Parse strokes to object
             Object strokesObj;
             try {
                 strokesObj = objectMapper.readValue(d.getStrokes(), Object.class);
@@ -642,31 +609,22 @@ public class RoomSocketHandler {
         }
 
         results.sort(Comparator.comparingInt(r -> -((int) r.get("score"))));
-
-        log.info("sendResults — {} results for {}", results.size(), roomCode);
-        for (Map<String, Object> r : results) {
-            log.info("  {} → reactions={} score={}", r.get("playerName"), r.get("reactions"), r.get("score"));
-        }
-
         votingStates.remove(roomCode);
-        server.getRoomOperations(roomCode).sendEvent("results:data", results);
+        sendToRoom(roomCode, "results/data", results);
     }
 
-  
+    // ─── Helpers ──────────────────────────────────────────────────────────────
 
-    // Remove a player from in-memory state 
     private void removePlayer(String roomCode, String userId) {
         RoomState state = roomStates.get(roomCode);
         if (state == null) return;
 
         state.connectedPlayers.remove(userId);
-
-        server.getRoomOperations(roomCode).sendEvent("room:playerLeft", Map.of(
+        sendToRoom(roomCode, "room/playerLeft", Map.of(
             "userId",           userId,
             "connectedPlayers", connectedPlayersList(state)
         ));
 
-        // If no players left clean everything up
         if (state.connectedPlayers.isEmpty()) {
             clearRoomTimer(roomCode);
             clearRoomTimer(roomCode + "_voting");
@@ -675,18 +633,29 @@ public class RoomSocketHandler {
         }
     }
 
-    // userId comes in as a URL query param when the socket connects
+    private void sendToRoom(String roomCode, String event, Object payload) {
+        messaging.convertAndSend("/topic/room/" + roomCode + "/" + event, payload);
+    }
+
+    private void sendToUser(String sessionId, String event, Object payload) {
+        org.springframework.messaging.simp.SimpMessageHeaderAccessor ha =
+            org.springframework.messaging.simp.SimpMessageHeaderAccessor
+                .create(org.springframework.messaging.simp.SimpMessageType.MESSAGE);
+        ha.setSessionId(sessionId);
+        ha.setLeaveMutable(true);
+        messaging.convertAndSendToUser(sessionId, "/queue/" + event, payload, ha.getMessageHeaders());
+    }
+
     private void clearRoomTimer(String key) {
-        ScheduledFuture<?> future = roomTimers.remove(key);
-        if (future != null) future.cancel(false);
+        ScheduledFuture<?> f = roomTimers.remove(key);
+        if (f != null) f.cancel(false);
     }
 
-    // userId comes in as a URL query param when the socket connects
-    private String getUserId(SocketIOClient client) {
-        return client.getHandshakeData().getSingleUrlParam("userId");
+    private String getUserId(SimpMessageHeaderAccessor accessor) {
+        if (accessor.getSessionAttributes() == null) return null;
+        return (String) accessor.getSessionAttributes().get("userId");
     }
 
-    // Flatten connected players to plain maps so Jackson can serialise them
     private List<Map<String, Object>> connectedPlayersList(RoomState state) {
         List<Map<String, Object>> list = new ArrayList<>();
         for (ConnectedPlayer cp : state.connectedPlayers.values()) {
@@ -695,13 +664,11 @@ public class RoomSocketHandler {
             m.put("playerName",  cp.playerName  != null ? cp.playerName  : "");
             m.put("avatarColor", cp.avatarColor != null ? cp.avatarColor : "");
             m.put("imageUrl",    cp.imageUrl    != null ? cp.imageUrl    : "");
-            m.put("socketId",    cp.socketId);
             list.add(m);
         }
         return list;
     }
 
-    // Lightweight room snapshot with fields only frontend actually needs
     private Map<String, Object> roomToMap(Room room) {
         Map<String, Object> m = new HashMap<>();
         m.put("id",              room.getId());
