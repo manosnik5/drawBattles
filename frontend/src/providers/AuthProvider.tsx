@@ -7,9 +7,9 @@ const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const { getAccessTokenSilently, isAuthenticated, isLoading } = useAuth0();
 
     useEffect(() => {
-        const interceptor = axiosInstance.interceptors.request.use(async (config) => {
-        if (config.url?.endsWith('/auth/callback')) {
-            return config
+       const interceptor = axiosInstance.interceptors.request.use(async (config) => {
+        if (config.url?.includes('/auth/callback')) {
+            return config  
         }
 
         if (isAuthenticated) {
