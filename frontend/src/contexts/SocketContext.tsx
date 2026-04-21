@@ -181,11 +181,12 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
                 const d = JSON.parse(msg.body)
                 updateRoomState({ timeLeft: d.timeLeft })
             }),
-            client.subscribe(`/topic/room/${roomCode}/drawing/stroke`, msg => {
-                // handled by DrawingPhase directly if needed
+            client.subscribe(`/topic/room/${roomCode}/drawing/stroke`, () => {
+               
             }),
-            client.subscribe(`/topic/room/${roomCode}/drawing/submitted`, msg => {
-                // optional: show submission progress
+
+            client.subscribe(`/topic/room/${roomCode}/drawing/submitted`, () => {
+               
             }),
             client.subscribe(`/topic/room/${roomCode}/voting/drawing`, msg => {
                 const d = JSON.parse(msg.body)
