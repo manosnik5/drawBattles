@@ -1,5 +1,5 @@
 import { useSocketContext } from '../../../contexts/SocketContext'
-import type { ConnectedPlayer } from '../RoomPage'
+import type { ConnectedPlayer } from '../../../contexts/SocketContext'
 import { Users, Crown, Copy, Check, Play } from 'lucide-react'
 import { useState } from 'react'
 
@@ -82,7 +82,7 @@ const LobbyPhase = ({ roomCode, room, connectedPlayers, isHost }: Props) => {
                   ) : (
                     <div
                       className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white"
-                      style={{ backgroundColor: player.avatarColor }}
+
                     >
                       {getInitials(player.playerName)}
                     </div>

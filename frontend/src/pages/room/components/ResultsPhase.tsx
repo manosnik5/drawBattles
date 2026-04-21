@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useSocketContext } from '../../../contexts/SocketContext'
-import type { ConnectedPlayer } from '../RoomPage'
+import type { ConnectedPlayer } from '../../../contexts/SocketContext'
 import { Home } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { renderToDataUrl } from '../../../utils/canvasUtils'
@@ -126,7 +126,7 @@ const ResultsPhase = ({ connectedPlayers }: Props) => {
                   ) : (
                     <div
                       className="w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0"
-                      style={{ backgroundColor: player?.avatarColor ?? '#6366f1' }}
+                      
                     >
                       {result.playerName[0]}
                     </div>

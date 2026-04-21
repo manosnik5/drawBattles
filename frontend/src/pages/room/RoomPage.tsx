@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useGetRoom } from '../../hooks/useRoom'
-import { useSocketContext, type ConnectedPlayer } from '../../contexts/SocketContext'
+import { useSocketContext } from '../../contexts/SocketContext'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useEffect, useState } from 'react'
 import LobbyPhase from './components/LobbyPhase'

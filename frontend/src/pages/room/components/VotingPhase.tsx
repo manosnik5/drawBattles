@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSocketContext } from '../../../contexts/SocketContext'
-import type { ConnectedPlayer } from '../RoomPage'
+import type { ConnectedPlayer } from '../../../contexts/SocketContext'
 import { renderStrokes, CANVAS_BG } from '../../../utils/canvasUtils'
 
 interface Props {
@@ -96,7 +96,7 @@ const VotingPhase = ({ roomCode, connectedPlayers, userId }: Props) => {
               ) : (
                 <div
                   className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-white shrink-0"
-                  style={{ backgroundColor: player?.avatarColor ?? '#6366f1' }}
+                  
                 >
                   {current.playerName[0]}
                 </div>

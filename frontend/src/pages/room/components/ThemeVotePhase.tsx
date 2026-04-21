@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useSocketContext } from '../../../contexts/SocketContext'
-import type { ConnectedPlayer } from '../RoomPage'
+import type { ConnectedPlayer } from '../../../contexts/SocketContext'
 import { Palette, Check, Users } from 'lucide-react'
 import { pickRandomThemes } from '../../../utils/themeSelector'
 

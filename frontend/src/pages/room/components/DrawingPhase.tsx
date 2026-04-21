@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { useSocketContext } from '../../../contexts/SocketContext'
 import { getStroke } from 'perfect-freehand'
 import { Eraser, Trash2, Send, Pencil, PaintBucket } from 'lucide-react'
-import type { ConnectedPlayer } from '../RoomPage'
+import type { ConnectedPlayer } from '../../../contexts/SocketContext'
 import { getSvgPath, floodFill, CANVAS_BG } from '../../../utils/canvasUtils'
 
 interface Props {
