@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useGetRoom } from '../../hooks/useRoom'
-import { useSocketContext } from '../../contexts/SocketContext'
+import { useSocketContext, type ConnectedPlayer } from '../../contexts/SocketContext'
 import { useAuth0 } from '@auth0/auth0-react'
 import { useEffect, useState } from 'react'
 import LobbyPhase from './components/LobbyPhase'
@@ -14,23 +14,11 @@ import FriendsSection from '../home/components/FriendsSection'
 
 export type Phase = 'lobby' | 'theme_vote' | 'drawing' | 'voting' | 'results'
 
-export interface ConnectedPlayer {
-    userId: string
-    playerName: string
-    avatarColor: string
-    imageUrl?: string
-}
-
-const AVATAR_COLORS = [
-    '#6366f1', '#8b5cf6', '#ec4899',
-    '#10b981', '#f59e0b', '#06b6d4',
-]
 
 const RoomPage = () => {
     const { roomCode } = useParams<{ roomCode: string }>()
     const navigate = useNavigate()
 
-    // ✅ FIX: Auth0 instead of Clerk
     const { user, isAuthenticated, isLoading } = useAuth0()
     const userId = user?.sub
 
@@ -41,10 +29,9 @@ const RoomPage = () => {
     useEffect(() => {
         if (!isConnected || !roomCode || !room || !userId || !isAuthenticated) return
 
-        const avatarColor =
-            AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)]
+ 
 
-        joinRoom(roomCode, user?.name || 'Player', avatarColor)
+        joinRoom(roomCode, user?.name || 'Player',)
 
         return () => {
             leaveRoom(roomCode)
@@ -53,7 +40,7 @@ const RoomPage = () => {
 
     if (isLoading || roomLoading || !isConnected) {
         return (
-            <div className="min-h-screen bg-gradient-to-b from-slate-950 via-indigo-950 to-slate-900 flex items-center justify-center">
+            <div className="min-h-screen bg-linear-to-b from-slate-950 via-indigo-950 to-slate-900 flex items-center justify-center">
                 <div className="flex flex-col items-center gap-3">
                     <Loader className="w-6 h-6 text-indigo-400 animate-spin" />
                     <p className="text-slate-400 text-sm">Connecting to room...</p>
@@ -64,7 +51,7 @@ const RoomPage = () => {
 
     if (isError || !room) {
         return (
-            <div className="min-h-screen bg-gradient-to-b from-slate-950 via-indigo-950 to-slate-900 flex items-center justify-center">
+            <div className="min-h-screen bg-linear-to-b from-slate-950 via-indigo-950 to-slate-900 flex items-center justify-center">
                 <div className="text-center">
                     <p className="text-red-400 text-sm mb-3">Room not found</p>
                     <button
@@ -83,10 +70,8 @@ const RoomPage = () => {
         roomState
 
     return (
-        <div className="min-h-screen bg-gradient-to-b from-slate-950 via-indigo-950 to-slate-900 text-slate-100">
+        <div className="min-h-screen bg-linear-to-b from-slate-950 via-indigo-950 to-slate-900 text-slate-100">
             <div className="flex h-screen">
-
-                {/* Main */}
                 <div className="flex-1 flex flex-col min-w-0">
                     <Navbar onToggleOpenSidebar={() => setSidebarOpen(p => !p)} />
 
@@ -142,7 +127,6 @@ const RoomPage = () => {
                     </main>
                 </div>
 
-                {/* Sidebar */}
                 {phase === 'lobby' && (
                     <>
                         <aside className={`

@@ -162,6 +162,7 @@ const FriendsSection = () => {
                   <div className="relative shrink-0">
                     {friend.imageUrl ? (
                       <img
+                        referrerPolicy="no-referrer"
                         src={friend.imageUrl}
                         className="w-8 h-8 rounded-full object-cover"
                       />

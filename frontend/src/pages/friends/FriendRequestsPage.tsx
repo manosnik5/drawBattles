@@ -7,15 +7,6 @@ import {
 import { UserPlus, Check, X, Loader, Clock } from "lucide-react"
 import Navbar from "../home/components/Navbar"
 
-const AVATAR_COLORS = [
-  "bg-indigo-500",
-  "bg-violet-500",
-  "bg-pink-500",
-  "bg-emerald-500",
-  "bg-amber-500",
-  "bg-cyan-500",
-]
-
 function getInitials(name: string): string {
   return name
     .split(" ")
@@ -30,7 +21,7 @@ const FriendRequestsPage = () => {
   const acceptRequest = useAcceptFriendRequest()
   const rejectRequest = useRejectFriendRequest()
 
-  // ✅ IMPORTANT FIX: only show pending requests
+  // only show pending requests
   const pendingRequests = (requests ?? []).filter(
     (r) => r.status === "pending"
   )
@@ -39,11 +30,10 @@ const FriendRequestsPage = () => {
   console.log("pending only:", pendingRequests)
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-indigo-950 to-slate-900 text-slate-100">
+    <div className="min-h-screen bg-linear-to-b from-slate-950 via-indigo-950 to-slate-900 text-slate-100">
       <Navbar />
 
       <main className="max-w-xl mx-auto px-4 py-12">
-        {/* Header */}
         <div className="flex items-center gap-3 mb-8">
           <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center">
             <Clock className="w-5 h-5 text-indigo-400" />
@@ -58,7 +48,6 @@ const FriendRequestsPage = () => {
           </div>
         </div>
 
-        {/* Content */}
         {isLoading ? (
           <div className="flex items-center justify-center py-16">
             <Loader className="w-6 h-6 text-indigo-400 animate-spin" />
@@ -73,14 +62,14 @@ const FriendRequestsPage = () => {
                 <div className="flex items-center gap-3">
                   {request.sender.imageUrl ? (
                     <img
+                      referrerPolicy="no-referrer"
                       src={request.sender.imageUrl}
                       className="w-10 h-10 rounded-full object-cover"
                     />
                   ) : (
                     <div
-                      className={`w-10 h-10 rounded-full ${
-                        AVATAR_COLORS[i % AVATAR_COLORS.length]
-                      } flex items-center justify-center text-sm font-bold text-white`}
+                      className="w-10 h-10 rounded-full 
+                      flex items-center justify-center text-sm font-bold text-white"
                     >
                       {getInitials(request.sender.fullName)}
                     </div>
@@ -96,7 +85,7 @@ const FriendRequestsPage = () => {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex items-center gap-2 shrink-0">
                   <button
                     onClick={() => acceptRequest.mutate(request.id)}
                     disabled={acceptRequest.isPending}

@@ -4,11 +4,6 @@ import { Search, UserPlus, Loader } from "lucide-react"
 import Navbar from "../home/components/Navbar"
 import type { Player } from "../../types"
 
-const AVATAR_COLORS = [
-  'bg-indigo-500', 'bg-violet-500', 'bg-pink-500',
-  'bg-emerald-500', 'bg-amber-500', 'bg-cyan-500',
-]
-
 function getInitials(name: string): string {
   return name
     .split(' ')
@@ -26,7 +21,7 @@ const AddFriendsPage = () => {
   const { data, isLoading } = useSearchPlayers(debouncedQuery)
   const sendRequest = useSendFriendRequest()
 
-  // ✅ normalize backend response safely
+  // normalize backend response safely
   const users: Player[] = Array.isArray(data)
     ? data
     : (data as any)?.users || (data as any)?.data || []
@@ -45,7 +40,7 @@ const AddFriendsPage = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-indigo-950 to-slate-900 text-slate-100">
+    <div className="min-h-screen bg-linear-to-b from-slate-950 via-indigo-950 to-slate-900 text-slate-100">
       <Navbar />
 
       <main className="max-w-xl mx-auto px-4 py-12">
@@ -60,7 +55,6 @@ const AddFriendsPage = () => {
           </div>
         </div>
 
-        {/* SEARCH */}
         <div className="relative mb-6">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
 
@@ -76,7 +70,6 @@ const AddFriendsPage = () => {
           )}
         </div>
 
-        {/* LIST */}
         <div className="space-y-2">
           {isLoading ? (
             <div className="flex items-center justify-center py-16">
@@ -95,11 +88,12 @@ const AddFriendsPage = () => {
                   <div className="flex items-center gap-3">
                     {user.imageUrl ? (
                       <img
+                        referrerPolicy="no-referrer"
                         src={user.imageUrl}
                         className="w-10 h-10 rounded-full object-cover"
                       />
                     ) : (
-                      <div className={`w-10 h-10 rounded-full ${AVATAR_COLORS[i % AVATAR_COLORS.length]} flex items-center justify-center text-sm font-bold text-white`}>
+                      <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white">
                         {getInitials(user.fullName)}
                       </div>
                     )}
