@@ -41,7 +41,9 @@ public class SecurityConfig {
                     "/assets/**",
                     "/*.js",
                     "/*.css",
-                    "/*.ico"
+                    "/*.ico",
+                    "/auth-callback",
+                    "/error"
                 ).permitAll()
 
                 .requestMatchers("/ws/**").permitAll()
