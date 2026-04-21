@@ -54,7 +54,7 @@ const FriendRequestsPage = () => {
           </div>
         ) : pendingRequests.length > 0 ? (
           <div className="space-y-2">
-            {pendingRequests.map((request, i) => (
+            {pendingRequests.map((request, _) => (
               <div
                 key={request.id}
                 className="flex items-center justify-between px-4 py-3.5 rounded-xl bg-slate-900/60 border border-white/10 hover:bg-slate-800/60 transition-colors"

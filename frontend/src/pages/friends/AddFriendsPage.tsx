@@ -77,7 +77,7 @@ const AddFriendsPage = () => {
             </div>
 
           ) : users.length > 0 ? (
-            users.map((user, i) => {
+            users.map((user, _) => {
               const sent = sentIds.has(user.id)
 
               return (
