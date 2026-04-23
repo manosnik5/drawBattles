@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react"
 import { useSearchPlayers, useSendFriendRequest } from "../../hooks/useFriends"
-import { Search, UserPlus, Loader } from "lucide-react"
+import { useNavigate } from 'react-router-dom'
+import { Search, UserPlus, Loader, ArrowLeft } from "lucide-react"
 import Navbar from "../home/components/Navbar"
 import type { Player } from "../../types"
 
@@ -17,6 +18,7 @@ const AddFriendsPage = () => {
   const [searchQuery, setSearchQuery] = useState("")
   const [debouncedQuery, setDebouncedQuery] = useState("")
   const [sentIds, setSentIds] = useState<Set<string>>(new Set())
+  const navigate = useNavigate()
 
   const { data, isLoading } = useSearchPlayers(debouncedQuery)
   const sendRequest = useSendFriendRequest()
@@ -44,8 +46,13 @@ const AddFriendsPage = () => {
       <Navbar />
 
       <main className="max-w-xl mx-auto px-4 py-12">
-
         <div className="flex items-center gap-3 mb-8">
+          <button
+            onClick={() => navigate('/')}
+            className="p-2 rounded-lg hover:bg-slate-800/60 text-slate-400 hover:text-white transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
           <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center">
             <UserPlus className="w-5 h-5 text-indigo-400" />
           </div>
