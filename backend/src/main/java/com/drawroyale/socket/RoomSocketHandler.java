@@ -49,7 +49,7 @@ public class RoomSocketHandler {
         "Legendary",     5
     );
 
-    // ─── State Classes ────────────────────────────────────────────────────────
+    // State Classes
 
     static class ConnectedPlayer {
         String userId, playerName, avatarColor, imageUrl, sessionId;
@@ -75,7 +75,7 @@ public class RoomSocketHandler {
         Map<String, VoteEntry> votes        = new ConcurrentHashMap<>();
     }
 
-    // ─── Called by WebSocketEventListener ────────────────────────────────────
+    // Called by WebSocketEventListener
 
     public void registerSession(String userId, String sessionId) {
         userSessions.put(userId, sessionId);
@@ -105,67 +105,190 @@ public class RoomSocketHandler {
     }
 }
 
-    // ─── room:join ────────────────────────────────────────────────────────────
+    // room:join 
 
     @MessageMapping("/room/join")
-    public void joinRoom(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
-        String userId     = getUserId(accessor);
-        String roomCode   = (String) data.get("roomCode");
-        String playerName = (String) data.get("playerName");
-        String avatarColor = (String) data.get("avatarColor");
-        if (userId == null || roomCode == null) return;
+public void joinRoom(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+    String userId     = getUserId(accessor);
+    String roomCode   = (String) data.get("roomCode");
+    String playerName = (String) data.get("playerName");
+    if (userId == null || roomCode == null) return;
 
-        userSessions.put(userId, accessor.getSessionId());
+    userSessions.put(userId, accessor.getSessionId());
 
-        try {
-            Room room = roomRepository.findByCode(roomCode).orElse(null);
-            if (room == null) {
-                sendToUser(accessor.getSessionId(), "room/error", Map.of("message", "Room not found"));
-                return;
-            }
+    try {
+        Room room = roomRepository.findByCode(roomCode).orElse(null);
+        if (room == null) {
+            sendToUser(accessor.getSessionId(), "room/error", Map.of("message", "Room not found"));
+            return;
+        }
 
-            var userPlayer = playerRepository.findById(userId).orElse(null);
+        var userPlayer = playerRepository.findById(userId).orElse(null);
 
-            roomStates.computeIfAbsent(roomCode, k -> {
-                RoomState s = new RoomState();
-                s.phase  = room.getPhase().name();
-                s.roomId = room.getId();
-                return s;
-            });
+        roomStates.computeIfAbsent(roomCode, k -> {
+            RoomState s = new RoomState();
+            s.phase  = room.getPhase().name();
+            s.roomId = room.getId();
+            return s;
+        });
 
-            RoomState state = roomStates.get(roomCode);
+        RoomState state = roomStates.get(roomCode);
 
-            ConnectedPlayer cp = new ConnectedPlayer();
-            cp.userId      = userId;
-            cp.playerName  = userPlayer != null ? userPlayer.getFullName() : playerName;
-            cp.avatarColor = avatarColor;
-            cp.imageUrl    = userPlayer != null ? userPlayer.getImageUrl() : null;
-            cp.sessionId   = accessor.getSessionId();
-            state.connectedPlayers.put(userId, cp);
+        // 👈 Check if player is already in room — this is a rejoin
+        boolean isRejoin = state.connectedPlayers.containsKey(userId);
 
-            List<Map<String, Object>> players = connectedPlayersList(state);
+        ConnectedPlayer cp = new ConnectedPlayer();
+        cp.userId      = userId;
+        cp.playerName  = userPlayer != null ? userPlayer.getFullName() : playerName;
+        cp.imageUrl    = userPlayer != null ? userPlayer.getImageUrl() : null;
+        cp.sessionId   = accessor.getSessionId();
+        state.connectedPlayers.put(userId, cp);
 
+        List<Map<String, Object>> players = connectedPlayersList(state);
+
+        if (!isRejoin) {
+            // New player — broadcast to everyone
             sendToRoom(roomCode, "room/playerJoined", Map.of(
                 "userId",           userId,
-                "playerName",       cp.playerName  != null ? cp.playerName  : "",
-                "avatarColor",      avatarColor    != null ? avatarColor    : "",
-                "imageUrl",         cp.imageUrl    != null ? cp.imageUrl    : "",
+                "playerName",       cp.playerName != null ? cp.playerName : "",
+                "imageUrl",         cp.imageUrl   != null ? cp.imageUrl   : "",
                 "connectedPlayers", players
             ));
-
-            sendToUser(accessor.getSessionId(), "room/state", Map.of(
-                "room",             roomToMap(room),
-                "phase",            state.phase,
-                "connectedPlayers", players
-            ));
-
-        } catch (Exception e) {
-            log.error("room:join error", e);
-            sendToUser(accessor.getSessionId(), "room/error", Map.of("message", "Failed to join room"));
         }
-    }
 
-    // ─── room:leave ───────────────────────────────────────────────────────────
+        // Always send current state back to the joining user
+        sendToUser(accessor.getSessionId(), "room/state", Map.of(
+            "room",             roomToMap(room),
+            "phase",            state.phase,
+            "connectedPlayers", players,
+            "selectedTheme",    room.getTheme() != null ? room.getTheme() : ""
+        ));
+
+        // Resend phase-specific data on rejoin
+        if (isRejoin) {
+            switch (state.phase) {
+                case "theme_vote" -> {
+                    if (state.themeOptions != null && !state.themeOptions.isEmpty()) {
+                        sendToUser(accessor.getSessionId(), "theme/options",
+                            Map.of("themes", state.themeOptions));
+                        if (!state.themeVotes.isEmpty()) {
+                            sendToUser(accessor.getSessionId(), "theme/vote_update",
+                                Map.of("votes", new HashMap<>(state.themeVotes)));
+                        }
+                    }
+                }
+                case "drawing" -> {
+                    if (room.getTheme() != null && !room.getTheme().isEmpty()) {
+                        sendToUser(accessor.getSessionId(), "theme/final",
+                            Map.of("theme", room.getTheme()));
+                    }
+                }
+                case "voting" -> {
+                    VotingState vs = votingStates.get(roomCode);
+                    if (vs != null && vs.currentIndex < vs.drawings.size()) {
+                        Drawing drawing = vs.drawings.get(vs.currentIndex);
+                        Object strokesObj;
+                        try {
+                            strokesObj = objectMapper.readValue(drawing.getStrokes(), Object.class);
+                        } catch (Exception e) {
+                            strokesObj = List.of();
+                        }
+                        sendToUser(accessor.getSessionId(), "voting/drawing", Map.of(
+                            "drawingId",  drawing.getId(),
+                            "playerId",   drawing.getPlayer().getId(),
+                            "playerName", drawing.getPlayerName(),
+                            "strokes",    strokesObj,
+                            "current",    vs.currentIndex + 1,
+                            "total",      vs.drawings.size()
+                        ));
+                    }
+                }
+                case "results" -> sendResults(roomCode);
+            }
+            log.info("rejoin: sent state to {} for room {} phase={}", userId, roomCode, state.phase);
+        }
+
+    } catch (Exception e) {
+        log.error("room:join error", e);
+        sendToUser(accessor.getSessionId(), "room/error", Map.of("message", "Failed to join room"));
+    }
+}
+
+    @MessageMapping("/room/requestState")
+    public void requestState(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
+        String userId   = getUserId(accessor);
+        String roomCode = (String) data.get("roomCode");
+        if (userId == null || roomCode == null) return;
+
+        RoomState state = roomStates.get(roomCode);
+        if (state == null) return;
+
+        Room room = roomRepository.findByCode(roomCode).orElse(null);
+        if (room == null) return;
+
+        log.info("requestState: phase={} for userId={} roomCode={}", state.phase, userId, roomCode);
+
+        // Always send current room state
+        sendToUser(accessor.getSessionId(), "room/state", Map.of(
+            "room",             roomToMap(room),
+            "phase",            state.phase,
+            "connectedPlayers", connectedPlayersList(state),
+            "selectedTheme",    room.getTheme() != null ? room.getTheme() : ""
+        ));
+
+    // Resend phase-specific data
+    switch (state.phase) {
+
+        case "theme_vote" -> {
+            // Resend theme options so user sees the voting screen
+            if (state.themeOptions != null && !state.themeOptions.isEmpty()) {
+                sendToUser(accessor.getSessionId(), "theme/options",
+                    Map.of("themes", state.themeOptions)
+                );
+                // Also resend current vote counts
+                if (!state.themeVotes.isEmpty()) {
+                    sendToUser(accessor.getSessionId(), "theme/vote_update",
+                        Map.of("votes", new HashMap<>(state.themeVotes))
+                    );
+                }
+            }
+        }
+
+        case "drawing" -> {
+            // Resend the selected theme so DrawingPhase shows it
+            if (room.getTheme() != null && !room.getTheme().isEmpty()) {
+                sendToUser(accessor.getSessionId(), "theme/final",
+                    Map.of("theme", room.getTheme())
+                );
+            }
+        }
+
+        case "voting" -> {
+            VotingState vs = votingStates.get(roomCode);
+            if (vs != null && vs.currentIndex < vs.drawings.size()) {
+                Drawing drawing = vs.drawings.get(vs.currentIndex);
+                Object strokesObj;
+                try {
+                    strokesObj = objectMapper.readValue(drawing.getStrokes(), Object.class);
+                } catch (Exception e) {
+                    strokesObj = List.of();
+                }
+                sendToUser(accessor.getSessionId(), "voting/drawing", Map.of(
+                    "drawingId",  drawing.getId(),
+                    "playerId",   drawing.getPlayer().getId(),
+                    "playerName", drawing.getPlayerName(),
+                    "strokes",    strokesObj,
+                    "current",    vs.currentIndex + 1,
+                    "total",      vs.drawings.size()
+                ));
+            }
+        }
+
+        case "results" -> sendResults(roomCode);
+    }
+}
+
+    // room:leave 
 
     @MessageMapping("/room/leave")
     public void leaveRoom(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
@@ -175,7 +298,7 @@ public class RoomSocketHandler {
         removePlayer(roomCode, userId);
     }
 
-    // ─── room:startGame ───────────────────────────────────────────────────────
+    // room:startGame
 
     @MessageMapping("/room/startGame")
     public void startGame(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
@@ -210,7 +333,7 @@ public class RoomSocketHandler {
         }
     }
 
-    // ─── theme:options ────────────────────────────────────────────────────────
+    // theme:options
 
     @MessageMapping("/theme/options")
     public void themeOptions(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
@@ -224,6 +347,16 @@ public class RoomSocketHandler {
 
             RoomState state = roomStates.get(roomCode);
             if (state == null) return;
+
+            // 👈 If themes already set, ignore — prevents re-submission on tab switch
+            if (state.themeOptions != null && !state.themeOptions.isEmpty()) {
+                log.info("theme:options ignored — themes already set for room {}", roomCode);
+                // Resend existing themes to the host so they see them
+                sendToUser(accessor.getSessionId(), "theme/options",
+                    Map.of("themes", state.themeOptions)
+                );
+                return;
+            }
 
             @SuppressWarnings("unchecked")
             List<String> themes = (List<String>) data.get("themes");
@@ -239,7 +372,7 @@ public class RoomSocketHandler {
         }
     }
 
-    // ─── theme:vote ───────────────────────────────────────────────────────────
+    // theme:vote
 
     @MessageMapping("/theme/vote")
     public void themeVote(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
@@ -280,7 +413,7 @@ public class RoomSocketHandler {
         }
     }
 
-    // ─── drawing:stroke ───────────────────────────────────────────────────────
+    // drawing:stroke
 
     @MessageMapping("/drawing/stroke")
     public void drawingStroke(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
@@ -295,7 +428,7 @@ public class RoomSocketHandler {
         ));
     }
 
-    // ─── drawing:submit ───────────────────────────────────────────────────────
+    // drawing:submit
 
     @MessageMapping("/drawing/submit")
     public void drawingSubmit(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
@@ -361,7 +494,7 @@ public class RoomSocketHandler {
         }
     }
 
-    // ─── voting:vote ──────────────────────────────────────────────────────────
+    // voting:vote
 
     @MessageMapping("/voting/vote")
     public void votingVote(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
@@ -393,7 +526,7 @@ public class RoomSocketHandler {
         ));
     }
 
-    // ─── room:invite ──────────────────────────────────────────────────────────
+    // room:invite
 
     @MessageMapping("/room/invite")
     public void roomInvite(@Payload Map<String, Object> data, SimpMessageHeaderAccessor accessor) {
@@ -418,7 +551,7 @@ public class RoomSocketHandler {
         }
     }
 
-    // ─── Phase Transitions ────────────────────────────────────────────────────
+    // Phase Transitions
 
     private void transitionPhase(String roomCode, String phase, Integer drawSeconds) {
         RoomState state = roomStates.get(roomCode);
@@ -453,7 +586,7 @@ public class RoomSocketHandler {
         if ("results".equals(phase)) sendResults(roomCode);
     }
 
-    // ─── Draw Timer ───────────────────────────────────────────────────────────
+    // Draw Timer
 
     private void startDrawTimer(String roomCode, int seconds) {
         clearRoomTimer(roomCode);
@@ -480,7 +613,7 @@ public class RoomSocketHandler {
         roomTimers.put(roomCode, future);
     }
 
-    // ─── Voting Round ─────────────────────────────────────────────────────────
+    // Voting Round
 
     private void startVotingRound(String roomCode) {
         RoomState state = roomStates.get(roomCode);
@@ -569,7 +702,7 @@ public class RoomSocketHandler {
         roomTimers.put(timerKey, future);
     }
 
-    // ─── Results ──────────────────────────────────────────────────────────────
+    // Results
 
     private void sendResults(String roomCode) {
         VotingState vs = votingStates.get(roomCode);
@@ -613,7 +746,7 @@ public class RoomSocketHandler {
         sendToRoom(roomCode, "results/data", results);
     }
 
-    // ─── Helpers ──────────────────────────────────────────────────────────────
+    // Helpers
 
     private void removePlayer(String roomCode, String userId) {
         RoomState state = roomStates.get(roomCode);

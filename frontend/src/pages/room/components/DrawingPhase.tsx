@@ -52,22 +52,28 @@ const BRUSH_SIZES = [
 ]
 
 const DrawingPhase = ({ roomCode, theme, userId, timeLeft, connectedPlayers }: Props) => {
-  const { submitDrawing, broadcastStroke } = useSocketContext()
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const isDrawing = useRef(false)
-  const currentPoints = useRef<[number, number, number][]>([])
-  const actions = useRef<DrawAction[]>([])
-  const submittedRef = useRef(false)
+  const {
+    submitDrawing,
+    broadcastStroke,
+    hasSubmittedDrawing,
+    setHasSubmittedDrawing,
+  } = useSocketContext()
+
+  const canvasRef       = useRef<HTMLCanvasElement>(null)
+  const isDrawing       = useRef(false)
+  const currentPoints   = useRef<[number, number, number][]>([])
+  const actions         = useRef<DrawAction[]>([])
   const timerStartedRef = useRef(false)
 
-  const [tool, setTool] = useState<'pen' | 'eraser' | 'fill'>('pen')
+  const [tool,  setTool]  = useState<'pen' | 'eraser' | 'fill'>('pen')
   const [color, setColor] = useState('#ffffff')
-  const [size, setSize] = useState(8)
-  const [showSubmitted, setShowSubmitted] = useState(false)
+  const [size,  setSize]  = useState(8)
 
   const timeWarning = timeLeft <= 30 && timeLeft > 0
 
+  // Init canvas — only clear if not already submitted
   useEffect(() => {
+    if (hasSubmittedDrawing) return
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
@@ -129,7 +135,7 @@ const DrawingPhase = ({ roomCode, theme, userId, timeLeft, connectedPlayers }: P
   }
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (submittedRef.current) return
+    if (hasSubmittedDrawing) return
 
     if (tool === 'fill') {
       const rect = canvasRef.current!.getBoundingClientRect()
@@ -153,7 +159,7 @@ const DrawingPhase = ({ roomCode, theme, userId, timeLeft, connectedPlayers }: P
   }
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawing.current || submittedRef.current || tool === 'fill') return
+    if (!isDrawing.current || hasSubmittedDrawing || tool === 'fill') return
     currentPoints.current = [...currentPoints.current, getPoint(e)]
 
     const canvas = canvasRef.current
@@ -192,21 +198,22 @@ const DrawingPhase = ({ roomCode, theme, userId, timeLeft, connectedPlayers }: P
   }, [color, size, tool, roomCode, broadcastStroke, redraw])
 
   const handleSubmit = useCallback(() => {
-    if (submittedRef.current) return
-    submittedRef.current = true
-    setShowSubmitted(true)
+    if (hasSubmittedDrawing) return
+    setHasSubmittedDrawing(true)
 
     const currentPlayer = connectedPlayers.find(p => p.userId === userId)
     const playerName = currentPlayer?.playerName || userId
     submitDrawing(roomCode, playerName, actions.current as any)
-  }, [roomCode, userId, connectedPlayers, submitDrawing])
+  }, [roomCode, userId, connectedPlayers, submitDrawing, hasSubmittedDrawing, setHasSubmittedDrawing])
 
   const handleClear = () => {
+    if (hasSubmittedDrawing) return
     actions.current = []
     redraw()
   }
 
   const handleUndo = () => {
+    if (hasSubmittedDrawing) return
     actions.current = actions.current.slice(0, -1)
     redraw()
   }
@@ -219,8 +226,6 @@ const DrawingPhase = ({ roomCode, theme, userId, timeLeft, connectedPlayers }: P
 
   return (
     <div className="flex flex-col gap-4">
-
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <p className="text-xs uppercase tracking-widest text-indigo-300/70 mb-1">Draw this</p>
@@ -235,15 +240,14 @@ const DrawingPhase = ({ roomCode, theme, userId, timeLeft, connectedPlayers }: P
         </div>
       </div>
 
-      {/* Canvas */}
       <div className="w-full rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
         <canvas
           ref={canvasRef}
           width={800}
           height={480}
           className={`w-full touch-none block ${
-            submittedRef.current ? 'cursor-default' :
-            tool === 'fill'      ? 'cursor-cell' :
+            hasSubmittedDrawing ? 'cursor-default' :
+            tool === 'fill'     ? 'cursor-cell' :
             'cursor-crosshair'
           }`}
           onPointerDown={onPointerDown}
@@ -252,12 +256,10 @@ const DrawingPhase = ({ roomCode, theme, userId, timeLeft, connectedPlayers }: P
         />
       </div>
 
-      {/* Toolbar or submitted state */}
-      {!showSubmitted ? (
+      {!hasSubmittedDrawing ? (
         <div className="flex flex-col gap-3 p-3 rounded-xl bg-slate-900/60 border border-white/10">
           <div className="flex flex-wrap items-center gap-3">
 
-            {/* Tool selector */}
             <div className="flex gap-1 p-1 bg-slate-800/60 rounded-lg">
               <button
                 onClick={() => setTool('pen')}
@@ -287,7 +289,6 @@ const DrawingPhase = ({ roomCode, theme, userId, timeLeft, connectedPlayers }: P
 
             <div className="w-px h-6 bg-white/10" />
 
-            {/* Brush sizes */}
             {tool !== 'fill' && (
               <div className="flex gap-1">
                 {BRUSH_SIZES.map(({ label, value }) => (
@@ -310,7 +311,6 @@ const DrawingPhase = ({ roomCode, theme, userId, timeLeft, connectedPlayers }: P
               <p className="text-xs text-amber-400/70">Click any area to fill it</p>
             )}
 
-            {/* Actions */}
             <div className="ml-auto flex items-center gap-2">
               <button
                 onClick={handleUndo}
@@ -336,7 +336,6 @@ const DrawingPhase = ({ roomCode, theme, userId, timeLeft, connectedPlayers }: P
 
           <div className="h-px bg-white/10" />
 
-          {/* Color palette */}
           <div className="flex flex-wrap gap-1.5">
             {COLORS.map(c => (
               <button

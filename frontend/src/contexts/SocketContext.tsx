@@ -88,6 +88,8 @@ interface SocketContextValue {
     roomState: RoomState
     currentRoomCode: string | null
     pendingInvites: Invite[]
+    hasSubmittedDrawing: boolean
+    setHasSubmittedDrawing: (val: boolean) => void
     joinRoom: (roomCode: string, playerName: string) => void
     leaveRoom: (roomCode: string) => void
     startGame: (roomCode: string) => void
@@ -108,6 +110,8 @@ const SocketContext = createContext<SocketContextValue>({
     roomState: defaultRoomState,
     currentRoomCode: null,
     pendingInvites: [],
+    hasSubmittedDrawing: false,
+    setHasSubmittedDrawing: () => {},
     joinRoom: () => {},
     leaveRoom: () => {},
     startGame: () => {},
@@ -132,9 +136,10 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
     const [roomState, setRoomState] = useState<RoomState>(defaultRoomState)
     const [currentRoomCode, setCurrentRoomCode] = useState<string | null>(null)
     const [pendingInvites, setPendingInvites] = useState<Invite[]>([])
+    const [hasSubmittedDrawing, setHasSubmittedDrawing] = useState(false)
 
-    // Keep current roomCode accessible inside stomp callbacks
     const currentRoomCodeRef = useRef<string | null>(null)
+    const stompClientRef = useRef<Client | null>(null)
     currentRoomCodeRef.current = currentRoomCode
 
     const updateRoomState = useCallback((partial: Partial<RoomState>) => {
@@ -153,8 +158,11 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
             }),
             client.subscribe(`/topic/room/${roomCode}/phase/changed`, msg => {
                 const d = JSON.parse(msg.body)
+                // Reset drawing submission when phase changes to drawing
+                if (d.phase === 'drawing') setHasSubmittedDrawing(false)
                 updateRoomState({
                     phase: d.phase,
+                    // Don't clear selectedTheme, keep it so DrawingPhase can read it after remount
                     votingDrawing: null,
                     votingResult: null,
                     votingVotes: {},
@@ -181,13 +189,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
                 const d = JSON.parse(msg.body)
                 updateRoomState({ timeLeft: d.timeLeft })
             }),
-            client.subscribe(`/topic/room/${roomCode}/drawing/stroke`, () => {
-               
-            }),
-
-            client.subscribe(`/topic/room/${roomCode}/drawing/submitted`, () => {
-               
-            }),
+            client.subscribe(`/topic/room/${roomCode}/drawing/stroke`, () => {}),
+            client.subscribe(`/topic/room/${roomCode}/drawing/submitted`, () => {}),
             client.subscribe(`/topic/room/${roomCode}/voting/drawing`, msg => {
                 const d = JSON.parse(msg.body)
                 updateRoomState({
@@ -227,84 +230,130 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         return subs
     }, [updateRoomState])
 
+    // Request fresh state from server when tab becomes visible again
     useEffect(() => {
-        if (isLoading || !isAuthenticated || !userId) return
+        const handleVisibilityChange = () => {
+            if (
+                document.visibilityState === 'visible' &&
+                stompClientRef.current?.connected &&
+                currentRoomCodeRef.current
+            ) {
+                stompClientRef.current.publish({
+                    destination: '/app/room/requestState',
+                    body: JSON.stringify({ roomCode: currentRoomCodeRef.current }),
+                })
+            }
+        }
 
-        let client: Client
-        let roomSubs: any[] = []
+        document.addEventListener('visibilitychange', handleVisibilityChange)
+        return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }, [])
 
-        const connect = async () => {
-            const token = await getAccessTokenSilently()
+   useEffect(() => {
+    if (isLoading || !isAuthenticated || !userId) return
 
-            client = new Client({
-                webSocketFactory: () => new SockJS(
-                    `${import.meta.env.VITE_API_URL}/ws?userId=${encodeURIComponent(userId)}`
-                ),
-                connectHeaders: {
-                    userId,                              // 👈 sent as STOMP header too
-                    Authorization: `Bearer ${token}`,
-                },
-                reconnectDelay: 5000,
+    let client: Client
+    let roomSubs: any[] = []
 
-                onConnect: () => {
-                    setIsConnected(true)
+    const connect = async () => {
+        const token = await getAccessTokenSilently()
 
-                    // Presence — online users list
-                    client.subscribe('/user/queue/presence/online_users', msg => {
-                        const users: string[] = JSON.parse(msg.body)
-                        setOnlineUsers(new Set(users))
+        client = new Client({
+            webSocketFactory: () => new SockJS(
+                `${import.meta.env.VITE_API_URL}/ws?userId=${encodeURIComponent(userId)}`
+            ),
+            connectHeaders: {
+                userId,
+                Authorization: `Bearer ${token}`,
+            },
+            reconnectDelay: 5000,
+
+            onConnect: () => {
+                setIsConnected(true)
+
+                client.subscribe('/user/queue/presence/online_users', msg => {
+                    const users: string[] = JSON.parse(msg.body)
+                    setOnlineUsers(new Set(users))
+                })
+
+                client.subscribe('/topic/presence', msg => {
+                    const d = JSON.parse(msg.body)
+                    setOnlineUsers(prev => {
+                        const next = new Set(prev)
+                        d.online ? next.add(d.userId) : next.delete(d.userId)
+                        return next
                     })
+                })
 
-                    // Presence — updates
-                    client.subscribe('/topic/presence', msg => {
-                        const d = JSON.parse(msg.body)
-                        setOnlineUsers(prev => {
-                            const next = new Set(prev)
-                            d.online ? next.add(d.userId) : next.delete(d.userId)
-                            return next
-                        })
+                client.subscribe('/user/queue/room/state', msg => {
+                    const d = JSON.parse(msg.body)
+                    updateRoomState({
+                        phase: d.phase,
+                        connectedPlayers: d.connectedPlayers,
+                        selectedTheme: d.selectedTheme ?? '',
                     })
+                })
 
-                    // Personal events (room state, invites, errors)
-                    client.subscribe('/user/queue/room/state', msg => {
-                        const d = JSON.parse(msg.body)
-                        updateRoomState({
-                            phase: d.phase,
-                            connectedPlayers: d.connectedPlayers,
-                        })
+                client.subscribe('/user/queue/theme/options', msg => {
+                    const d = JSON.parse(msg.body)
+                    updateRoomState({ themeOptions: d.themes })
+                })
+
+                client.subscribe('/user/queue/theme/vote_update', msg => {
+                    const d = JSON.parse(msg.body)
+                    updateRoomState({ themeVotes: d.votes })
+                })
+
+                client.subscribe('/user/queue/theme/final', msg => {
+                    const d = JSON.parse(msg.body)
+                    updateRoomState({ selectedTheme: d.theme })
+                })
+
+                client.subscribe('/user/queue/voting/drawing', msg => {
+                    const d = JSON.parse(msg.body)
+                    updateRoomState({
+                        votingDrawing: d,
+                        votingResult: null,
+                        votingVotes: {},
+                        votingTimeLeft: 10,
                     })
+                })
 
-                    client.subscribe('/user/queue/room/invite', msg => {
-                        const d = JSON.parse(msg.body)
-                        setPendingInvites(prev => [
-                            ...prev,
-                            { id: crypto.randomUUID(), ...d }
-                        ])
-                    })
+                client.subscribe('/user/queue/room/invite', msg => {
+                    const d = JSON.parse(msg.body)
+                    setPendingInvites(prev => [...prev, { id: crypto.randomUUID(), ...d }])
+                })
 
-                    client.subscribe('/user/queue/room/error', msg => {
-                        const d = JSON.parse(msg.body)
-                        console.error('room error:', d.message)
-                    })
+                client.subscribe('/user/queue/room/error', msg => {
+                    const d = JSON.parse(msg.body)
+                    console.error('room error:', d.message)
+                })
 
-                    // Request online users
+                if (currentRoomCodeRef.current) {
+                    roomSubs = subscribeToRoom(client, currentRoomCodeRef.current)
                     client.publish({
-                        destination: '/app/presence/online',
-                        body: JSON.stringify({ userId }),
+                        destination: '/app/room/requestState',
+                        body: JSON.stringify({ roomCode: currentRoomCodeRef.current }),
                     })
+                }
 
-                    // Re-subscribe to room if we were in one
-                    if (currentRoomCodeRef.current) {
-                        subscribeToRoom(client, currentRoomCodeRef.current)
-                    }
-                },
+                client.publish({
+                    destination: '/app/presence/online',
+                    body: JSON.stringify({ userId }),
+                })
+            },
 
-                onDisconnect: () => setIsConnected(false),
-                onStompError: frame => console.error('STOMP error:', frame),
+            onDisconnect: () => {
+                setIsConnected(false)
+                // 👈 DO NOT reset roomState or currentRoomCode here
+                // State is preserved so UI doesn't flicker on reconnect
+            },
+            onStompError: frame => console.error('STOMP error:', frame),
             })
 
             client.activate()
             setStompClient(client)
+            stompClientRef.current = client
         }
 
         connect()
@@ -312,10 +361,13 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         return () => {
             roomSubs.forEach(s => s?.unsubscribe())
             client?.deactivate()
+            stompClientRef.current = null
             setStompClient(null)
             setIsConnected(false)
+            // 👈 Only reset state when the entire auth session ends (user logs out)
+            // NOT on every reconnect
             setOnlineUsers(new Set())
-            setRoomState(defaultRoomState)
+            // Don't reset roomState or currentRoomCode here
         }
     }, [isLoading, isAuthenticated, userId, getAccessTokenSilently, updateRoomState, subscribeToRoom])
 
@@ -324,7 +376,6 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         setCurrentRoomCode(roomCode)
         currentRoomCodeRef.current = roomCode
 
-        // Subscribe to room topics
         subscribeToRoom(stompClient, roomCode)
 
         stompClient.publish({
@@ -338,9 +389,11 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
             destination: '/app/room/leave',
             body: JSON.stringify({ roomCode }),
         })
+        // Only reset here — when user explicitly leaves
         setCurrentRoomCode(null)
         currentRoomCodeRef.current = null
         setRoomState(defaultRoomState)
+        setHasSubmittedDrawing(false)
     }, [stompClient])
 
     const startGame = useCallback((roomCode: string) => {
@@ -407,6 +460,8 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         roomState,
         currentRoomCode,
         pendingInvites,
+        hasSubmittedDrawing,
+        setHasSubmittedDrawing,
         joinRoom,
         leaveRoom,
         startGame,
@@ -419,9 +474,9 @@ export const SocketProvider = ({ children }: { children: ReactNode }) => {
         rejectRoomInvite,
     }), [
         stompClient, isConnected, onlineUsers, isOnline, roomState,
-        currentRoomCode, pendingInvites, joinRoom, leaveRoom, startGame,
-        submitThemeOptions, voteTheme, broadcastStroke, submitDrawing,
-        castVote, acceptRoomInvite, rejectRoomInvite,
+        currentRoomCode, pendingInvites, hasSubmittedDrawing,
+        joinRoom, leaveRoom, startGame, submitThemeOptions, voteTheme,
+        broadcastStroke, submitDrawing, castVote, acceptRoomInvite, rejectRoomInvite,
     ])
 
     return (

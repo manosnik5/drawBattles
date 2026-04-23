@@ -77,8 +77,6 @@ const VotingPhase = ({ roomCode, connectedPlayers, userId }: Props) => {
 
   return (
     <div className="flex flex-col items-center gap-5">
-
-      {/* Header */}
       <div className="w-full flex items-center justify-between">
         <div>
           <p className="text-xs uppercase tracking-widest text-indigo-300/70 mb-1">

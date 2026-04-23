@@ -25,6 +25,13 @@ const ThemeVotePhase = ({ roomCode, isHost, connectedPlayers, themeOptions, them
   }, [isHost, roomCode])
 
   useEffect(() => {
+    if (!isHost) return
+    if (themeOptions.length > 0) return
+    const themes = pickRandomThemes(3)
+    submitThemeOptions(roomCode, themes)
+  }, [isHost, roomCode]) 
+
+  useEffect(() => {
     if (roomState.selectedTheme) {
       setFinalTheme(roomState.selectedTheme)
     }

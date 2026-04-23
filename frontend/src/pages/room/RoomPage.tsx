@@ -2,7 +2,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useGetRoom } from '../../hooks/useRoom'
 import { useSocketContext } from '../../contexts/SocketContext'
 import { useAuth0 } from '@auth0/auth0-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import LobbyPhase from './components/LobbyPhase'
 import ThemeVotePhase from './components/ThemeVotePhase'
 import DrawingPhase from './components/DrawingPhase'
@@ -12,9 +12,6 @@ import VotingPhase from './components/VotingPhase'
 import ResultsPhase from './components/ResultsPhase'
 import FriendsSection from '../home/components/FriendsSection'
 
-export type Phase = 'lobby' | 'theme_vote' | 'drawing' | 'voting' | 'results'
-
-
 const RoomPage = () => {
     const { roomCode } = useParams<{ roomCode: string }>()
     const navigate = useNavigate()
@@ -22,21 +19,63 @@ const RoomPage = () => {
     const { user, isAuthenticated, isLoading } = useAuth0()
     const userId = user?.sub
 
-    const { isConnected, roomState, joinRoom, leaveRoom } = useSocketContext()
+    const { isConnected, roomState, joinRoom, leaveRoom, stompClient } = useSocketContext()
     const { data: room, isLoading: roomLoading, isError } = useGetRoom(roomCode!)
     const [sidebarOpen, setSidebarOpen] = useState(false)
 
+    const joinedRef        = useRef(false)
+    const everConnectedRef = useRef(false)  // 👈 track if we ever connected
+
+    // Once connected, remember it — don't go back to loading on reconnect
+    if (isConnected) everConnectedRef.current = true
+
+    const stompClientRef = useRef(stompClient)
+    const roomCodeRef    = useRef(roomCode)
+    stompClientRef.current = stompClient
+    roomCodeRef.current    = roomCode
+
     useEffect(() => {
         if (!isConnected || !roomCode || !room || !userId || !isAuthenticated) return
+        if (joinedRef.current) return
 
- 
-
-        joinRoom(roomCode, user?.name || 'Player',)
+        joinedRef.current = true
+        joinRoom(roomCode, user?.name || 'Player')
 
         return () => {
+            joinedRef.current = false
             leaveRoom(roomCode)
         }
-    }, [isConnected, roomCode, room, userId, isAuthenticated])
+    }, [isConnected, roomCode, room?.code, userId, isAuthenticated])
+
+    // Request fresh state when tab becomes visible
+    useEffect(() => {
+        const handleVisibility = () => {
+            if (
+                document.visibilityState === 'visible' &&
+                stompClientRef.current?.connected &&
+                roomCodeRef.current
+            ) {
+                stompClientRef.current.publish({
+                    destination: '/app/room/requestState',
+                    body: JSON.stringify({ roomCode: roomCodeRef.current }),
+                })
+            }
+        }
+        document.addEventListener('visibilitychange', handleVisibility)
+        return () => document.removeEventListener('visibilitychange', handleVisibility)
+    }, [])
+
+    // Replace the loading check with:
+    if (isLoading || roomLoading) {
+        return (
+            <div className="min-h-screen bg-linear-to-b from-slate-950 via-indigo-950 to-slate-900 flex items-center justify-center">
+                <div className="flex flex-col items-center gap-3">
+                    <Loader className="w-6 h-6 text-indigo-400 animate-spin" />
+                    <p className="text-slate-400 text-sm">Connecting to room...</p>
+                </div>
+            </div>
+        )
+    }   
 
     if (isLoading || roomLoading || !isConnected) {
         return (
@@ -54,10 +93,7 @@ const RoomPage = () => {
             <div className="min-h-screen bg-linear-to-b from-slate-950 via-indigo-950 to-slate-900 flex items-center justify-center">
                 <div className="text-center">
                     <p className="text-red-400 text-sm mb-3">Room not found</p>
-                    <button
-                        onClick={() => navigate('/')}
-                        className="text-xs text-indigo-400 hover:text-indigo-300"
-                    >
+                    <button onClick={() => navigate('/')} className="text-xs text-indigo-400 hover:text-indigo-300">
                         ← Back to home
                     </button>
                 </div>
@@ -66,22 +102,17 @@ const RoomPage = () => {
     }
 
     const isHost = room.hostId === userId
-    const { phase, connectedPlayers, selectedTheme, timeLeft, themeOptions, themeVotes } =
-        roomState
+    const { phase, connectedPlayers, selectedTheme, timeLeft, themeOptions, themeVotes } = roomState
 
     return (
         <div className="min-h-screen bg-linear-to-b from-slate-950 via-indigo-950 to-slate-900 text-slate-100">
             <div className="flex h-screen">
                 <div className="flex-1 flex flex-col min-w-0">
                     <Navbar onToggleOpenSidebar={() => setSidebarOpen(p => !p)} />
-
                     <main className="flex-1 overflow-y-auto">
                         <div className={`mx-auto px-4 py-10 ${
-                            phase === 'drawing' || phase === 'voting'
-                                ? 'max-w-4xl'
-                                : 'max-w-3xl'
+                            phase === 'drawing' || phase === 'voting' ? 'max-w-4xl' : 'max-w-3xl'
                         }`}>
-
                             {phase === 'lobby' && (
                                 <LobbyPhase
                                     roomCode={roomCode!}
@@ -90,7 +121,6 @@ const RoomPage = () => {
                                     isHost={isHost}
                                 />
                             )}
-
                             {phase === 'theme_vote' && (
                                 <ThemeVotePhase
                                     roomCode={roomCode!}
@@ -100,7 +130,6 @@ const RoomPage = () => {
                                     themeVotes={themeVotes}
                                 />
                             )}
-
                             {phase === 'drawing' && (
                                 <DrawingPhase
                                     roomCode={roomCode!}
@@ -110,7 +139,6 @@ const RoomPage = () => {
                                     connectedPlayers={connectedPlayers}
                                 />
                             )}
-
                             {phase === 'voting' && (
                                 <VotingPhase
                                     roomCode={roomCode!}
@@ -118,11 +146,9 @@ const RoomPage = () => {
                                     userId={userId!}
                                 />
                             )}
-
                             {phase === 'results' && (
                                 <ResultsPhase connectedPlayers={connectedPlayers} />
                             )}
-
                         </div>
                     </main>
                 </div>
@@ -131,23 +157,17 @@ const RoomPage = () => {
                     <>
                         <aside className={`
                             fixed inset-y-0 right-0 z-40 w-72 border-l border-white/10
-                            bg-slate-900/95 backdrop-blur
-                            transform transition-transform duration-300
+                            bg-slate-900/95 backdrop-blur transform transition-transform duration-300
                             ${sidebarOpen ? 'translate-x-0' : 'translate-x-full'}
                             md:relative md:translate-x-0 md:flex md:flex-col
                         `}>
                             <FriendsSection />
                         </aside>
-
                         {sidebarOpen && (
-                            <div
-                                className="fixed inset-0 z-30 bg-black/50 md:hidden"
-                                onClick={() => setSidebarOpen(false)}
-                            />
+                            <div className="fixed inset-0 z-30 bg-black/50 md:hidden" onClick={() => setSidebarOpen(false)} />
                         )}
                     </>
                 )}
-
             </div>
         </div>
     )
